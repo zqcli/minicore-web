@@ -533,18 +533,23 @@ function approvalKey(interaction, key, mods, armedFrom, now, inField) {
 // ---- paths ----
 // Windows paths (drive letters, UNC) take `\` or `/` and compare without case.
 const WIN = /^([A-Za-z]:([\\/]|$)|\\\\)/;
-const canon = p => WIN.test(p) ? p.replace(/\//g, '\\') : p;
-const pkey = p => WIN.test(p) ? canon(p).toLowerCase().replace(/\\+$/, '') : p;
-const isDrive = p => /^[A-Za-z]:\\?$/.test(canon(p));
+const verbatim = p => p.startsWith('\\\\?\\');
+const canon = p => WIN.test(p) && !verbatim(p) ? p.replace(/\//g, '\\') : p;
+// Compare ordinary and verbatim spellings of the same drive/UNC root without
+// changing the path sent back to Host (trailing-dot/space names need their prefix).
+const pkey = p => WIN.test(p) ? canon(p).replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\(?=[A-Za-z]:\\)/, '').toLowerCase().replace(/\\+$/, '') : p;
+const isDrive = p => /^[A-Za-z]:$/.test(pkey(p));
 function splitPath(path) {
   const p = canon(path), win = WIN.test(p), sep = win ? '\\' : '/', parts = p.split(sep).filter(Boolean);
   const out = parts.map((name, k) => {
     let q = (p.startsWith('\\\\') ? '\\\\' : p.startsWith(sep) ? sep : '') + parts.slice(0, k + 1).join(sep);
-    if (/^[A-Za-z]:$/.test(q)) q += sep;
+    if (/^[A-Za-z]:$/.test(q) || /^\\\\\?\\[^\\]+$/.test(q)) q += sep;
     return { name, path: q };
   });
   if (p.startsWith('/')) out.unshift({ name: '/', path: '/' });
-  return out;
+  // A network share or verbatim prefix is one root, never a navigable "\\?" or server-only crumb.
+  const skip = /^\\\\\?\\UNC\\/i.test(p) ? 3 : p.startsWith('\\\\') ? 1 : 0;
+  return out.slice(skip);
 }
 function within(p, root) {
   if (!WIN.test(root)) return p === root || p.startsWith(root.endsWith('/') ? root : root + '/');
