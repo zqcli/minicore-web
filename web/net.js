@@ -1,233 +1,144 @@
 import * as MC from './core.js';
+import { HostConnection, accessKeyName, loadConfig } from './host.js';
+import { HostApplication } from './host-app.js';
 import { $, closeAll, fill, h, icon, spin, toast } from './ui.js';
 
-// ---- net ----
-export const S = MC.createStore(), HOST = location.host, KEY = 'minicore.token';
-const draftClient = Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
-export const newDraftVersion = () => draftClient + ':' + MC.newDraftVersion(S);
-let ws = null, ready = false;
-// Callbacks main.js binds: message(msg, effects), lost() once the socket is gone, render() when the state changed locally
-// and reset() when the signed-out device forgets what it showed.
-const on = {};
+export const S = MC.createStore();
+export let HOST = '';
+const on = {}, app = new HostApplication(S, (event, effects) => on.message?.(event, effects));
+let client = null, config = null, halted = false, screen = '', retryTimer = 0, attempt = 0, connecting = false;
 export const bind = callbacks => Object.assign(on, callbacks);
-export const repaint = () => on.render();
-
+export const repaint = () => on.render?.();
+export const newDraftVersion = () => MC.newDraftVersion(S);
 export const tz = () => new Date().getTimezoneOffset();
-export const hostNow = () => Date.now() + S.skew;
+export const hostNow = () => Date.now();
 export const stampAt = ms => MC.stamp(ms, hostNow(), tz());
-export const turnStatus = () => S.state.status;
-export const viewed = () => S.state.session || S.state.draft;
-// Ids keep counting so a late reply never matches a new request.
-const resetStore = () => Object.assign(S, MC.createStore(), { nid: S.nid });
-export const online = () => ready && ws && ws.readyState === 1;
-function send(msg) { ws.send(JSON.stringify(msg)); }
-function hangUp() {
-  if (ws) { const s = ws; ws = null; s.onclose = s.onmessage = null; s.close(); lost(); }
-}
-function open(first) {
-  const s = ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + HOST + '/ws');
-  s.onopen = () => s.send(JSON.stringify(first()));
-  s.onmessage = e => {
-    const msg = JSON.parse(e.data), fx = MC.reduce(S, msg, Date.now());
-    if (fx.welcome) ready = true;
-    on.message(msg, fx);
-    if (fx.fs) { const cb = fsWait.get(msg.id); fsWait.delete(msg.id); cb(msg); }
-    if (fx.result) { const cb = waits.get(msg.id); waits.delete(msg.id); cb(msg); pump(); }
-  };
-  s.onclose = () => { if (ws === s) { ws = null; lost(); closed(); } };
-}
-const socketGone = () => !ws || ws.readyState > 1;
-function lost() {
-  ready = false;
-  MC.disconnect(S);
-  for (const cb of fsWait.values()) cb({ ok: false, error: 'io', message: 'Not connected' });
-  fsWait.clear();
-  failQueries();
-  on.lost();
-}
-// ---- intents and requests ----
-function sendIntent(message) {
-  if (!message) { toast('Local confirmation buffer is full · resolve or discard an unconfirmed message', 'error'); return false; }
-  send(message);
-  repaint();
-  return true;
-}
-// `own` handles the ack where the request was made (a dialog shows its own error).
-export function intent(spec, own, draft) {
-  if (!online()) { toast('Not connected', 'error'); return false; }
-  return sendIntent(MC.intent(S, spec, own, draft));
-}
-// Only an explicit warned action retries an unconfirmed send.
-export function resend(id) {
-  if (!online() || !confirm('This message may already have arrived. Send it again, possibly creating a duplicate?')) return;
-  return sendIntent(MC.sendAgain(S, id));
-}
-export function discard(id) {
-  if (confirm('This message may already have arrived. Discard only its retained local copy?') && MC.discardUnconfirmed(S, id)) repaint();
-}
-export const pendingKind = k => !!MC.pending(S, k);
-export const sending = () => pendingKind('submit') || pendingKind('queue');
-const fsWait = new Map();
-export function fsCall(body, cb) {
-  if (!online()) return cb({ ok: false, error: 'io', message: 'Not connected' });
-  const msg = MC.request(S, body);
-  fsWait.set(msg.id, cb);
-  send(msg);
-}
-// Queries wait for room (at most four in flight) and fail when the connection drops.
-const waits = new Map(), queue = [];
-export function ask(spec, cb) { queue.push([spec, cb]); pump(); }
-export function pump() {
-  while (queue.length && online() && MC.queryRoom(S)) {
-    const [spec, cb] = queue.shift(), msg = MC.query(S, spec);
-    waits.set(msg.id, cb);
-    send(msg);
-  }
-}
-function failQueries() {
-  const all = [...waits.values(), ...queue.map(q => q[1])];
-  waits.clear(); queue.length = 0;
-  for (const cb of all) cb({ ok: false, error: 'Connection lost' });
-}
-
-// ---- connection ----
-let halted = false, attempt = 0, retryT = 0, how = 'hello', screen = '';
+export const turnStatus = () => S.state?.status || {};
+export const viewed = () => S.state?.session || S.state?.draft || {};
+export const online = () => app.online;
+export const operating = () => app.operating;
 export const isHalted = () => halted;
 export const isMain = () => screen === 'main';
-const teardown = () => { clearTimeout(retryT); hangUp(); };
-function start(first, kind) { teardown(); how = kind; open(first); }
+export const pendingKind = kind => !!MC.pending(S, kind);
+export const sending = () => pendingKind('submit') || pendingKind('queue');
+export const pump = () => {};
 
-// ---- screens ----
-function show(name) {
-  screen = name;
-  $('signin').hidden = name !== 'signin';
-  $('gate').hidden = name !== 'gate';
-  $('app').hidden = name !== 'main';
-  if (name !== 'main') closeAll();
-}
-function gateScreen(g) {
-  const eicon = h('div', 'eicon' + (g.icon === 'warn' ? ' warn' : ''), icon(g.icon, 'lg'));
-  fill($('gate'), h('div', 'col', g.spinner ? h('img', { class: 'appicon', src: '/icon.svg', alt: '' }) : eicon, h('h1', '', g.title), g.text && h('p', 'sub', g.text),
-    g.spinner && spin(), g.action && h('div', 'gate-acts', h('button', { class: 'btn primary block', onclick: () => gateAction(g.action) }, g.label),
-      g.signin && h('button', { class: 'btn ghost', onclick: signOut }, 'Sign in with a password'))));
-  show('gate');
-}
-function gateAction(a) {
-  if (a === 'reload') location.reload();
-  else { halted = false; attempt = 0; connecting(); connect(); }
-}
-function connecting() {
-  if (S.state) return show('main');
-  gateScreen(attempt < 2
-    ? { spinner: true, title: 'Connecting…', text: HOST }
-    : { icon: 'cloudoff', title: MC.unreachable(HOST), text: 'Check that MiniCore is running with remote control on and that this device can reach your computer. Retrying…', action: 'retry', label: 'Retry now', signin: true });
-}
-
-// ---- sign-in ----
-let lockUntil = 0, lockT = 0;
-function signinScreen(o = {}) {
-  show('signin');
-  $('shost').textContent = HOST;
-  const note = $('snote');
-  note.hidden = !o.notice;
-  if (o.notice) note.lastChild.textContent = o.notice;
-  signinBusy(false);
-  if (o.locked) lock(o.locked);
-  else if (o.error) signinError(o.error, o);
-  else if (!lockT) signinError('');
-  const pw = $('pw');
-  if (o.shake) { const f = $('pwf'); f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake'); }
-  if (o.error || o.shake) { pw.focus(); pw.select(); } else if (!o.notice) pw.focus({ preventScroll: true });
-}
-function signinError(text, o = {}) {
-  const e = $('serr');
-  $('pwf').classList.toggle('bad', !!text && !o.warn && !o.retry);
-  e.hidden = !text;
-  e.className = 'ferr' + (o.warn ? ' warn' : '');
-  fill(e, text && icon(o.warn ? 'info' : 'warn', 'sm'), h('span', '', text), o.retry && h('button', { onclick: doLogin }, 'Retry'));
-}
-function signinBusy(on) {
-  const b = $('sgo');
-  b.firstChild.hidden = !on;
-  b.lastChild.textContent = on ? 'Connecting…' : 'Connect';
-  b.disabled = on || Date.now() < lockUntil;
-  $('pw').readOnly = on;
-}
-function lock(sec) {
-  lockUntil = Date.now() + sec * 1000;
-  clearInterval(lockT);
-  const step = () => {
-    const left = Math.ceil((lockUntil - Date.now()) / 1000);
-    if (left <= 0) { clearInterval(lockT); lockT = 0; lockUntil = 0; signinError('You can try again now.', { warn: true }); signinBusy(false); return; }
-    signinError(MC.lockText(left), { warn: true });
-    $('sgo').disabled = true;
-  };
-  lockT = setInterval(step, 1000);
-  step();
-}
-function doLogin() {
-  const pw = $('pw').value;
-  if (!pw.trim()) { signinError('Enter the password shown on your computer.'); $('pw').focus(); return; }
-  if (Date.now() < lockUntil) return;
-  signinError('');
-  signinBusy(true);
-  halted = false;
-  start(() => MC.login(pw, MC.deviceName(navigator.userAgent, navigator.maxTouchPoints)), 'login');
-}
-$('sf').addEventListener('submit', e => { e.preventDefault(); doLogin(); });
-$('pw').addEventListener('input', () => { if (!lockT) signinError(''); });
-$('pweye').addEventListener('click', () => {
-  const pw = $('pw'), b = $('pweye'), vis = pw.type === 'password';
-  pw.type = vis ? 'text' : 'password';
-  b.setAttribute('aria-pressed', vis);
-  b.setAttribute('aria-label', vis ? 'Hide password' : 'Show password');
-  b.firstChild.firstChild.setAttribute('href', vis ? '#i-eyeoff' : '#i-eye');
-});
-export function signOut() {
-  localStorage.removeItem(KEY);
-  halted = true;
-  teardown();
-  resetSession();
-  signinScreen({ notice: 'Signed out of this device. Enter the password to connect again.' });
-}
-
-function connect() {
-  const token = localStorage.getItem(KEY);
-  if (!token) return signinScreen();
-  start(() => MC.hello(token), 'hello');
+function run(operation) {
+  if (!operation) { toast('Local confirmation buffer is full · resolve or discard an unconfirmed message', 'error'); return false; }
+  operation.navigation = app.navigation;
+  const session = S.state?.sessions.find(s => s.id === operation.target.session_id && s.agent_id === operation.target.agent_id);
+  operation.config_revision = operation.spec.expected_config_revision ?? (S.state?.session?.id === operation.target.session_id ? S.state.session.config_revision : session?.config_revision);
+  if (operation.kind === 'update_agent') operation.config_revision = operation.spec.expected_config_revision ?? S.state.agent?.config_revision;
+  operation.controller_revision = app.observation?.state?.controller_revision;
+  operation.queuedText = S.state?.queue.find(q => q.id === operation.spec.input_id)?.text;
   repaint();
-}
-function closed() {
-  if (halted) return;
-  if (how === 'login') { signinBusy(false); signinError(MC.unreachable(HOST), { retry: true }); return; }
-  attempt++;
-  if (!S.state) connecting();
-  repaint();
-  retryT = setTimeout(connect, MC.backoff(attempt - 1));
-}
-export function wake(force) {
-  if (halted || screen === 'signin' || !localStorage.getItem(KEY)) return;
-  if (force || socketGone()) { clearTimeout(retryT); attempt = 0; connect(); }
-}
-function onGate(g) {
-  halted = true;
-  teardown();
-  if (g.forget) { localStorage.removeItem(KEY); resetSession(); }
-  if (g.view === 'signin') signinScreen(g);
-  else gateScreen(g);
-}
-function resetSession() {
-  resetStore();
-  on.reset();
-}
-// The connection part of a message: the token to keep, the welcome, and the gate screens. False when the message ended in one.
-export function handshake(fx) {
-  if (fx.token) { localStorage.setItem(KEY, fx.token); how = 'hello'; }
-  if (fx.welcome) { attempt = 0; signinBusy(false); }
-  if (fx.gate) { onGate(fx.gate); return false; }
-  if (fx.snapshot && screen !== 'main') { show('main'); $('pw').value = ''; }
+  app.execute(operation).then(result => finish(operation, { ok: result.acceptance !== 'rejected', ...result })).catch(error => {
+    const receipt = error.receipt || operation.receipt;
+    const acceptance = receipt?.result?.delivery === 'accepted' ? 'accepted' : error.acceptance || (error.kind === 'business' || error.sent === false ? 'rejected' : 'unknown');
+    finish(operation, { ok: acceptance === 'accepted', error: error.message, fault: error.fault, receipt, acceptance });
+  });
   return true;
 }
-export function boot() {
-  if (localStorage.getItem(KEY)) { connecting(); connect(); } else signinScreen();
+function finish(operation, result) {
+  const current = operation.target.session_id ? S.sid === operation.target.session_id && S.state?.session?.agent_id === operation.target.agent_id
+    : operation.navigation === app.navigation || result.receipt?.session_id === S.sid;
+  const ack = { ...operation, ...result, current, text: result.text ?? operation.text };
+  if (!result.ok && result.acceptance === 'unknown' && operation.text != null) { operation.st = 'unconfirmed'; ack.unconfirmed = true; }
+  else S.intents.delete(operation.id);
+  if (on.message) on.message(null, { ack, state: true }); else operation.own?.(ack);
+}
+export function intent(spec, own, draft) {
+  if (!online()) { toast('Not connected', 'error'); return false; }
+  return run(MC.intent(S, spec, own, draft));
+}
+export function resend(id) {
+  if (!operating() || !confirm('This message may already have arrived. Send it again to its original target, possibly creating a duplicate?')) return;
+  run(MC.sendAgain(S, id));
+}
+export function discard(id) { if (confirm('This message may already have arrived. Discard only its retained local copy?') && MC.discardUnconfirmed(S, id)) repaint(); }
+export function ask(spec, callback) {
+  const target = structuredClone(spec.target || (spec.source?.session_id && spec.source?.agent_id ? spec.source : MC.captureTarget(S, spec)));
+  app.query(spec, target).then(data => callback({ ok: true, data })).catch(error => callback({ ok: false, error: error.message, message: error.message, fault: error.fault }));
+}
+export function fsCall(spec, callback) {
+  app.files(spec).then(result => callback({ ok: true, ...result })).catch(error => callback({ ok: false, error: error.message, message: error.message, fault: error.fault, receipt: error.receipt }));
+}
+export function recoverObservations() { return app.recover().catch(error => toast(error.message, 'error')); }
+
+function show(name) {
+  screen = name; $('signin').hidden = name !== 'signin'; $('gate').hidden = name !== 'gate'; $('app').hidden = name !== 'main';
+  if (name !== 'main') closeAll();
+}
+function signinError(message) {
+  const error = $('serr'); error.hidden = !message; $('pwf').classList.toggle('bad', !!message);
+  fill(error, message && icon('warn', 'sm'), h('span', '', message || ''));
+}
+function signinBusy(busy) { const button = $('sgo'); button.firstChild.hidden = !busy; button.lastChild.textContent = busy ? 'Connecting…' : 'Connect'; button.disabled = busy; $('pw').readOnly = busy; }
+function signin(notice, error) {
+  show('signin'); $('shost').textContent = HOST; $('snote').hidden = !notice;
+  if (notice) $('snote').lastChild.textContent = notice;
+  signinBusy(false); signinError(error); $('pw').focus({ preventScroll: true });
+}
+function gate(message, retry = false) {
+  fill($('gate'), h('div', 'col', h('img', { class: 'appicon', src: './icon.svg', alt: '' }), h('h1', '', retry ? 'Connection unavailable' : 'Connecting…'), h('p', 'sub', message),
+    retry ? h('div', 'gate-acts', h('button', { class: 'btn primary', onclick: () => { halted = false; connect(); } }, 'Retry'), h('button', { class: 'btn ghost', onclick: signOut }, 'Use another access key')) : spin()));
+  show('gate');
+}
+function lost(connection) {
+  if (client !== connection) return;
+  MC.disconnect(S); on.lost?.();
+  if (!halted && !connecting) {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => connect(), MC.backoff(attempt++));
+  }
+}
+async function connect(key, login = false) {
+  if (connecting || halted || !config) return;
+  key ||= sessionStorage.getItem(accessKeyName(HOST));
+  if (!key) return signin();
+  clearTimeout(retryTimer); connecting = true;
+  if (!S.state) gate(HOST);
+  const connection = new HostConnection(HOST, { onClose: () => lost(connection) });
+  client = connection;
+  try {
+    await connection.connect(key);
+    await app.initialize(connection, config);
+    if (client !== connection) return;
+    sessionStorage.setItem(accessKeyName(HOST), key);
+    $('pw').value = ''; signinBusy(false); show('main'); attempt = 0;
+    on.message?.(null, { welcome: true, snapshot: true, state: true });
+  } catch (error) {
+    if (client !== connection) return;
+    if (login || error.kind === 'business' || error.kind === 'protocol') { halted = true; signin(null, error.message); }
+    else { if (!S.state) gate(error.message, true); retryTimer = setTimeout(() => connect(), MC.backoff(attempt++)); }
+  } finally { connecting = false; repaint(); }
+}
+function doLogin() {
+  const key = $('pw').value;
+  if (!key.trim()) { signinError('Enter the Host access key.'); return; }
+  halted = false; signinError(''); signinBusy(true); connect(key, true);
+}
+$('sf').addEventListener('submit', event => { event.preventDefault(); doLogin(); });
+$('pw').addEventListener('input', () => signinError(''));
+$('pweye').addEventListener('click', () => {
+  const pw = $('pw'), button = $('pweye'), visible = pw.type === 'password'; pw.type = visible ? 'text' : 'password';
+  button.setAttribute('aria-pressed', String(visible)); button.setAttribute('aria-label', visible ? 'Hide access key' : 'Show access key');
+  button.firstChild.firstChild.setAttribute('href', visible ? '#i-eyeoff' : '#i-eye');
+});
+export function signOut() {
+  halted = true; clearTimeout(retryTimer);
+  if (HOST) sessionStorage.removeItem(accessKeyName(HOST));
+  const previous = client; client = null; previous?.close(); app.client = null; app.navigation++;
+  Object.assign(S, MC.createStore(), { nid: S.nid }); on.reset?.(); signin('Signed out. Enter the Host access key to connect again.');
+}
+export function wake() {
+  if (halted || !config || screen === 'signin') return;
+  // Background/foreground changes do not close a healthy operator connection.
+  if (online()) { if (app.stream?.ended || app.hostStream?.ended) recoverObservations(); return; }
+  clearTimeout(retryTimer); connect();
+}
+export function handshake(fx) { if (fx.snapshot && S.state && screen !== 'main') show('main'); return true; }
+export async function boot() {
+  try { config = await loadConfig(); HOST = config.host_url; if (sessionStorage.getItem(accessKeyName(HOST))) await connect(); else signin(); }
+  catch (error) { halted = true; gate(error.message, true); }
 }
