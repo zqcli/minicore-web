@@ -80,7 +80,7 @@ test('desktop UI bootstraps, streams, approves real tools, renames and restores 
     const changes = page.getByRole('dialog', { name: /^Changes/ });
     await changes.getByRole('button', { name: /created\.txt/ }).waitFor();
     await changes.getByRole('button', { name: 'Close', exact: true }).click();
-    await menu(page, 'Context');
+    await send(page, '/context');
     const contextSheet = page.getByRole('dialog', { name: 'Context', exact: true });
     await contextSheet.locator('dl').waitFor();
     await contextSheet.getByRole('button', { name: 'Close', exact: true }).click();
