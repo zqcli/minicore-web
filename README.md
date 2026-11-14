@@ -19,6 +19,9 @@ CI 使用固定的 Host 提交验证实际协议。
 - 设置 `network.listen`，并通过 `network.access_key_env` 指定 Host 访问密钥的环境变量。
 - 配置与浏览器所用 Host 域名匹配、且受浏览器信任的 TLS 证书。
 
+首次启动请使用新的、独立的 `--data-root` 目录。`--config` 只用于初始化新的数据根；
+再次打开已有数据根时，以其中保存的 Host 配置为准。
+
 ```sh
 minicore-host \
   --data-root /absolute/path/to/minicore-web-data \
