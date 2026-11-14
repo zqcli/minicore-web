@@ -12,18 +12,21 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" id="tc" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" id="tcd" content="#0e0e10" media="(prefers-color-scheme: dark)">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
 <title>MiniCore</title>
-<link rel="stylesheet" href="/app.css">
-<script src="/theme.js"></script>
-<link rel="modulepreload" href="/main.js">
-<link rel="modulepreload" href="/core.js">
-<link rel="modulepreload" href="/ui.js">
-<link rel="modulepreload" href="/net.js">
-<link rel="modulepreload" href="/sessions.js">
-<link rel="modulepreload" href="/conversation.js">
+<link rel="stylesheet" href="./app.css">
+<script src="./theme.js"></script>
+<link rel="modulepreload" href="./main.js">
+<link rel="modulepreload" href="./core.js">
+<link rel="modulepreload" href="./ui.js">
+<link rel="modulepreload" href="./net.js">
+<link rel="modulepreload" href="./host.js">
+<link rel="modulepreload" href="./host-state.js">
+<link rel="modulepreload" href="./host-app.js">
+<link rel="modulepreload" href="./sessions.js">
+<link rel="modulepreload" href="./conversation.js">
 </head>
 <body>
 <svg class="sprite" width="0" height="0" aria-hidden="true">
@@ -81,19 +84,19 @@
 
 <section id="signin" class="screen" hidden>
   <div class="col">
-    <img class="appicon" src="/icon.svg" alt="" width="72" height="72">
+    <img class="appicon" src="./icon.svg" alt="" width="72" height="72">
     <h1>Connect to MiniCore</h1>
     <p class="sub">on <b id="shost"></b></p>
     <div id="snote" class="note" role="status" hidden><svg viewBox="0 0 24 24" class="ic sm"><use href="#i-info"/></svg><span></span></div>
     <form id="sf" novalidate>
-      <label for="pw">Password</label>
+      <label for="pw">Host access key</label>
       <div class="field" id="pwf">
-        <input id="pw" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="xxxx-xxxx-xxxx" aria-describedby="serr shelp">
-        <button type="button" id="pweye" class="ib" aria-label="Show password" aria-pressed="false"><svg viewBox="0 0 24 24" class="ic"><use href="#i-eye"/></svg></button>
+        <input id="pw" name="access_key" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="Host access key" aria-describedby="serr shelp">
+        <button type="button" id="pweye" class="ib" aria-label="Show access key" aria-pressed="false"><svg viewBox="0 0 24 24" class="ic"><use href="#i-eye"/></svg></button>
       </div>
       <div id="serr" class="ferr" role="alert" hidden></div>
       <button id="sgo" class="btn primary block" type="submit"><span class="spin" hidden></span><span>Connect</span></button>
-      <p class="help" id="shelp">The password is shown on your computer's MiniCore screen.</p>
+      <p class="help" id="shelp">Enter the access key configured for this MiniCore Host.</p>
     </form>
   </div>
 </section>
@@ -137,6 +140,6 @@
 <div id="scrim"></div>
 <div id="layer"></div>
 <div id="live" class="sr" aria-live="polite"></div>
-<script type="module" src="/main.js"></script>
+<script type="module" src="./main.js"></script>
 </body>
 </html>

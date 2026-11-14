@@ -125,7 +125,7 @@ addEventListener('pageshow', e => { if (e.persisted) wake(true); });
 addEventListener('focus', () => wake(false));
 addEventListener('online', () => { repaint(); wake(false); });
 addEventListener('offline', repaint);
-if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('/sw.js');
+if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('./sw.js');
 if (window.visualViewport) {
   // iOS keeps the layout viewport under the keyboard; sheets are lifted by the part it covers.
   // Panning fires scroll events without a change, and every write to these properties restyles the whole page.

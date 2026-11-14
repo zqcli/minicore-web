@@ -34,6 +34,11 @@ export function icon(name, cls) {
 export const fill = (n, ...k) => n.replaceChildren(...kids(k));
 // Renders run on every state or frame; writing the value a property already has still costs a style pass.
 export const set = (el, prop, value) => { if (el[prop] !== value) el[prop] = value; };
+// Directory cursors are opaque Host values; append only a page for the displayed directory.
+export function appendDirectoryPage(current, page) {
+  if (!current || current.path !== page.path) throw new Error('Directory page does not match the displayed folder');
+  return { ...page, entries: [...current.entries, ...page.entries] };
+}
 export const spin = cls => h('span', 'spin' + (cls ? ' ' + cls : ''));
 export const loading = text => h('div', 'loadrow', spin(), text);
 const mq = q => matchMedia(q);
@@ -218,7 +223,7 @@ const savePrefs = () => localStorage.setItem('minicore.prefs', JSON.stringify(en
 // While the page is hidden: approvals and finished turns through the service worker, which brings the app back.
 export function notify(text, id) {
   if (!document.hidden || !prefs.notify || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-  navigator.serviceWorker.ready.then(r => r.showNotification('MiniCore', { body: text, tag: id || 'minicore', data: { session: id }, icon: '/icon-192.png' }));
+  navigator.serviceWorker.ready.then(r => r.showNotification('MiniCore', { body: text, tag: id || 'minicore', data: { session: id }, icon: new URL('./icon-192.png', location.href).href }));
 }
 export const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 // The screen stays on while this view's turn runs and the page is visible, when the setting asks for it.

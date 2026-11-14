@@ -1,6 +1,6 @@
 import * as MC from './core.js';
-import { HOST, S, ask, discard, hostNow, intent, newDraftVersion, online, pendingKind, repaint, resend, sending, stampAt, turnStatus, tz, viewed } from './net.js';
-import { compactNow, exportSession, openApprovals, openChanges, openContext, openHelp, openInfo, openModel, openNav, openNew, openOutput, openSettings, rename } from './sessions.js';
+import { HOST, S, ask, discard, hostNow, intent, newDraftVersion, online, operating, pendingKind, repaint, resend, sending, stampAt, turnStatus, tz, viewed } from './net.js';
+import { compactNow, exportSession, openApprovals, openChanges, openContext, openHelp, openInfo, openModel, openAgent, openNav, openNew, openOutput, openSettings, rename } from './sessions.js';
 import { $, actions, announce, apple, copyButton, copyText, diffView, findSheet, h, hover, icon, inField, keepFocus, kids, loading, menuRow, notify, part, prefs, reduced, set, share, sheet, spin, toast, topModal, wide } from './ui.js';
 
 // ---- composer ----
@@ -17,10 +17,10 @@ function renderStrip() {
   $('strip').classList.toggle('warn', blocked);
   if (on) stripPart({ ...MC.statusLine(S.state, S.blocks), blocked, started: blocked ? null : s.started_ms });
 }
-// The turn to stop is the one the phone was shown, never whichever runs when the tap lands.
+// Stop the exact Turn shown when the action is captured.
 export function stop() {
-  const t = turnStatus(), loop = S.state && S.state.session && S.state.session.loop_id;
-  if (MC.canStop(t) && !t.interrupting && !pendingKind('cancel')) intent(MC.intents.cancel(loop, !loop && t.operation_id));
+  const t = turnStatus(), turn = t.turn_id;
+  if (operating() && MC.canStop(t) && !t.interrupting && !pendingKind('cancel')) intent(MC.intents.cancel(turn, !turn && t.operation_id));
 }
 const trayPart = part($('tray'), t => [
   t.uncertain && h('div', { class: 'lost', role: 'alert' }, icon('warn', 'sm'),
@@ -50,7 +50,7 @@ $('tray').addEventListener('click', e => {
   if (k === 'qmore') { qAll = !qAll; renderTray(); }
   else if (k === 'qedit' || k === 'qdelete') {
     const row = button.closest('.qp'), edit = k === 'qedit', id = row.dataset.input;
-    if (online()) {
+    if (operating()) {
       if (edit) edits.add(id);
       intent(MC.intents.unqueue(id, edit));
     }
@@ -67,9 +67,9 @@ $('tray').addEventListener('click', e => {
 });
 function renderTray() {
   const q = MC.queueView(S.state.queue, qAll);
-  trayPart({ lost: MC.unconfirmed(S).map(it => [it.id, it.text]), uncertain: draftOrigins.length > 0, q, on: online() });
+  trayPart({ lost: MC.unconfirmed(S).map(it => [it.id, it.text]), uncertain: draftOrigins.length > 0, q, on: operating() });
 }
-// The bottom row of the composer: + and the draft's folder and profile on the left, then the slot (the model as plain text,
+// The bottom row of the composer: + and the draft's folder and Agent on the left, then the slot (the model as plain text,
 // or Follow-up while a turn runs with text typed) and the primary button, which keeps its place and changes face.
 const PRIMARY = {
   send: { icon: 'up', label: 'Send' }, steer: { icon: 'steer', label: 'Steer' },
@@ -82,10 +82,10 @@ const composerState = () => {
 };
 const chipsPart = part($('chips'), c => [h('div', 'cl',
   h('button', { class: 'chip icon', 'data-k': 'plus', 'aria-label': 'Commands, prompts and files', 'aria-haspopup': 'dialog', onclick: openPlus }, icon('plus', 'sm')),
-  h('button', { class: 'chip icon', 'data-k': 'appr', 'aria-label': 'Approvals', 'aria-haspopup': 'dialog', onclick: openApprovals }, icon('shield', 'sm'), c.allowed && h('i', { class: 'sdot', 'aria-hidden': 'true' })),
+  h('button', { class: 'chip icon', 'data-k': 'appr', 'aria-label': 'Approvals', 'aria-haspopup': 'dialog', onclick: openApprovals }, icon('shield', 'sm'), c.automatic && h('i', { class: 'sdot', 'aria-hidden': 'true' })),
   c.ctx && h('button', { class: 'chip ctx' + (c.hi ? ' hi' : ''), 'data-k': 'ctx', 'aria-label': c.ctx + ' of context used', onclick: openContext }, c.ctx),
   c.draft && h('button', { class: 'chip', 'data-k': 'folder', 'aria-label': 'Folder ' + c.draft.folder + ', change', onclick: () => openNew() }, icon('folder', 'xs'), h('span', '', c.draft.folder)),
-  c.draft && c.draft.profiles && h('button', { class: 'chip', 'data-k': 'profile', 'aria-label': 'Profile ' + c.draft.profile + ', change', onclick: openProfile }, h('span', '', c.draft.profile || 'Profile'))),
+  c.draft && h('button', { class: 'chip', 'data-k': 'agent', 'aria-label': 'Agent ' + c.draft.agent + ', change', onclick: openAgent }, h('span', '', c.draft.agent || 'Agent'))),
   c.followUp
     ? h('button', { class: 'tbtn acc', 'data-k': 'follow', title: c.tips && 'Queue as follow-up · ' + ALT + 'Enter', 'aria-label': 'Queue as a follow-up', disabled: c.disabled, onclick: () => submit('queue') }, icon('follow', 'sm'), 'Follow-up')
     : h('button', { class: 'tbtn', 'data-k': 'model', 'aria-label': 'Model ' + c.model + ', change', onclick: openModel }, h('span', '', c.modelShort), c.level && h('span', 'rz', '· ' + c.level), icon('chevd', 'xs')),
@@ -96,7 +96,7 @@ const chipsPart = part($('chips'), c => [h('div', 'cl',
 function renderChips() {
   const s = turnStatus(), c = viewed(), d = S.state.draft, cs = composerState(), kind = MC.primaryKind(cs), typed = cs.text.trim() !== '';
   set(ta, 'readOnly', false);
-  set(ta, 'placeholder', MC.placeholder(s.busy, !!S.state.session, hover.matches && { send: tips(), alt: ALT }));
+  set(ta, 'placeholder', !operating() && online() ? 'Read-only connection · draft locally' : !S.state.session && !S.state.draft.agent_id ? 'Choose an Agent and folder to begin' : MC.placeholder(s.busy, !!S.state.session, hover.matches && { send: tips(), alt: ALT }));
   if (kind !== primary) {
     if (kind !== 'steer') closePriMenu();
     if (kind === 'stop') stopAt = Date.now();
@@ -107,10 +107,10 @@ function renderChips() {
   const tip = !hover.matches ? null : kind === 'send' ? 'Send · ' + tips() : kind === 'stop' ? 'Stop the turn · Esc'
     : kind === 'steer' ? 'Steer · ' + tips() + ' · right-click for more' : null;
   chipsPart({
-    kind, tip, tips: hover.matches && tips(), followUp: cs.busy && typed && kind === 'steer', draft: !S.state.session && { folder: MC.basename(d.workspace), profile: d.profile, profiles: S.state.profiles.length > 1 },
-    allowed: !!(S.state.session && S.state.session.allowed.length), ctx: S.state.context_percent != null ? Math.round(S.state.context_percent) + '%' : '', hi: S.state.context_percent >= 80,
+    kind, tip, tips: hover.matches && tips(), followUp: cs.busy && typed && kind === 'steer', draft: !S.state.session && { folder: d.workspace ? MC.basename(d.workspace) : 'Choose folder', agent: (S.state.agents.find(a => a.id === d.agent_id) || {}).name || 'Choose Agent' },
+    automatic: viewed().execution?.approval === 'auto', ctx: S.state.context_percent != null ? Math.round(S.state.context_percent) + '%' : '', hi: S.state.context_percent >= 80,
     model: c.model || '', modelShort: c.model ? MC.midTrunc(c.model, wide.matches ? 28 : 16) : 'Model', level: c.reasoning,
-    disabled: cs.lock || !online() || kind === 'stopping' || (kind === 'send' && !typed),
+    disabled: cs.lock || !operating() || kind === 'stopping' || (kind === 'send' && (!typed || (!S.state.session && !d.agent_id))),
   });
 }
 // A tap on the primary asks MC what it means from the live text. A long press or right click opens the menu while text is
@@ -147,7 +147,8 @@ function grow() {
   ta.style.height = 'auto';
   ta.style.height = ta.scrollHeight + 'px';
 }
-const draftKey = () => 'minicore.draft.' + (S.sid || 'new');
+const draftKeyFor = id => 'minicore-web.draft.' + encodeURIComponent(HOST) + '.' + (id || 'new');
+const draftKey = () => draftKeyFor(S.sid);
 let draftVersion = null, draftOrigins = [];
 function storeOrigins(key, version, origins) {
   if (origins.length) localStorage.setItem(key + '.unknown', JSON.stringify({ version, origins }));
@@ -190,7 +191,7 @@ function submit(kind) {
   const c = MC.parseSlash(text, S.state.commands);
   if (c && c.builtin) { ta.value = ''; composerInput(); return builtin(c); }
   if (c && c.unknown) return toast('Unknown command /' + c.unknown, 'error');
-  if (!online()) return;
+  if (!operating()) return;
   if (draftOrigins.length && !confirm('This draft comes from a message that may already have arrived. Send it again, possibly creating a duplicate?')) return;
   if (intent(kind === 'queue' ? MC.intents.queue(text) : MC.intents.submit(text), undefined,
     { key: draftKey(), version: draftVersion })) {
@@ -223,8 +224,8 @@ ta.addEventListener('input', () => { recall = -1; composerInput(); });
 ta.addEventListener('click', updateMenu);
 
 let menu = null, filesT = 0, recall = -1;
-const recentKey = 'minicore.recent.' + HOST;
-let recent = JSON.parse(localStorage.getItem(recentKey) || '[]');
+const recentKey = () => 'minicore-web.recent.' + encodeURIComponent(HOST);
+let recent = [];
 const popPart = part($('pop'), m => m && (m.items.length ? m.items.map((x, k) => h('button', {
   class: 'opt', role: 'option', id: 'opt' + k, 'aria-selected': String(k === m.sel), tabindex: '-1',
 }, m.kind === 'cmd' ? [h('span', 'on', '/' + x.name), h('span', 'od', x.description), h('span', 'tag', x.hint || (x.builtin ? '' : 'template'))]
@@ -290,16 +291,16 @@ ta.addEventListener('keydown', e => {
   if (act) { e.preventDefault(); submit(act); }
 });
 ta.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ta) setMenu(null); }, 150));
-function remember(text) { recent = MC.pushRecent(recent, text); localStorage.setItem(recentKey, JSON.stringify(recent)); }
+function remember(text) { if (typeof text !== 'string') return; recent = MC.pushRecent(recent, text); localStorage.setItem(recentKey(), JSON.stringify(recent)); }
 export function openPlus() {
   sheet({
-    key: 'plus', title: 'Add to your message', deps: () => [S.state.commands, recent.slice(0, 8), !!S.state.session],
+    key: 'plus', title: 'Add to your message', deps: () => [S.state.commands, recent.slice(0, 8), !!S.state.session, operating()],
     body: m => {
       const cmds = MC.commandList(S.state.commands);
       return [S.state.session && [h('h3', 'sec2', 'Insert'), h('div', 'list', menuRow(m, 'at', 'File', insertAt, { sub: 'Mention a file in this workspace as @path' }))],
         recent.length > 0 && [h('h3', 'sec2', 'Recent prompts'), h('div', 'list', recent.slice(0, 8).map(t => menuRow(m, 'history', t.length > 120 ? t.slice(0, 120) + '…' : t, () => fillComposer(t))))],
         h('h3', 'sec2', 'Commands'), h('div', 'list', cmds.map(c => menuRow(m, c.builtin ? 'term' : 'sparkle', '/' + c.name + (c.hint ? ' ' + c.hint : ''),
-          () => { setMenu({ kind: 'cmd', items: [c], sel: 0 }); accept(0); }, { sub: c.description, mono: true })))];
+          () => { setMenu({ kind: 'cmd', items: [c], sel: 0 }); accept(0); }, { sub: c.description, mono: true, disabled: !operating() && ['rename', 'compact'].includes(c.name) })))];
     },
   });
 }
@@ -309,16 +310,6 @@ function insertAt() {
   ta.focus();
   ta.setSelectionRange(p + pre.length, p + pre.length);
   composerInput();
-}
-function openProfile() {
-  const d = S.state.draft;
-  const m = sheet({
-    key: 'profile', cls: 'dialog', title: 'Profile', deps: () => [S.state.draft.profile, S.state.profiles],
-    body: () => h('div', { class: 'list', role: 'radiogroup', 'aria-label': 'Profile' }, S.state.profiles.map(p => h('button', {
-      class: 'row flat', role: 'radio', 'aria-checked': String(p === S.state.draft.profile),
-      onclick: () => { if (p !== S.state.draft.profile) intent(MC.intents.newSession(d.workspace, p)); m.close(); },
-    }, h('span', 'rt', h('span', 'rm', p)), p === S.state.draft.profile && icon('check', 'ck')))),
-  });
 }
 
 
@@ -340,7 +331,7 @@ export function settleSubmission(ack) {
   if (ack.ok || ack.unconfirmed) retireSubmission(ack);
 }
 export function returnedToDraft(session_id, text) {
-  const key = 'minicore.draft.' + (session_id || 'new');
+  const key = draftKeyFor(session_id);
   const origins = storedOrigins(key, localStorage.getItem(key + '.version')), version = newDraftVersion();
   localStorage.setItem(key, MC.mergeReturned(localStorage.getItem(key) || '', text));
   localStorage.setItem(key + '.version', version);
@@ -368,7 +359,7 @@ export const schedule = () => { if (!raf) raf = requestAnimationFrame(flush); };
 // Tool rows start open when they failed and thinking when the setting says so; folds, groups, messages and compactions start closed.
 const startsOpen = (k, b) => k[0] === 't' ? b.state === 'failed' : k[0] === 'r' && prefs.thinking;
 const isOpen = (k, b) => opened.has(k) ? opened.get(k) : startsOpen(k, b);
-export function onNewSession() { stick = true; pinned = true; win = MC.WINDOW; opened.clear(); thinkTimes.clear(); showJump(false); loadDraft(); }
+export function onNewSession() { recent = JSON.parse(localStorage.getItem(recentKey()) || '[]'); stick = true; pinned = true; win = MC.WINDOW; opened.clear(); thinkTimes.clear(); showJump(false); loadDraft(); }
 export function resetTranscript() { nodes.forEach(n => n.remove()); nodes.length = 0; lo = hi = 0; win = MC.WINDOW; pinned = true; opened.clear(); dirty.clear(); }
 function redrawAll() { for (let i = lo; i < hi; i++) dirty.add(i); schedule(); }
 // The element with data-k `k` keeps its place on screen through the next flush.
@@ -454,8 +445,8 @@ function toolBody(b, f) {
     !shown && f.kind === 'cmd' && !f.run && h('div', 'hint', 'No output'));
 }
 function toolNode(b) {
-  const k = 't' + b.call_id, f = MC.toolInfo(b), o = isOpen(k, b);
-  const d = decided.get(b.call_id), dec = d && (d.you ? d.text + ' · you' : b.state === 'denied' && 'Denied on another device');
+  const k = 't' + b.tool_call_id, f = MC.toolInfo(b), o = isOpen(k, b);
+  const dec = decided.has(b.tool_call_id) && b.state === 'denied' ? 'Denied by this connection' : '';
   return h('div', 'tl', h('button', { class: 'tr' + (f.run ? ' run' : ''), 'data-k': k, 'aria-expanded': String(o) },
     stateIcon(b, f), h('span', 'vb', f.verb), h('span', 'tg', f.target), toolMeta(f), icon('chev', 'xs cv')),
     dec && h('div', 'dec', icon('slash', 'xs'), dec), o && toolBody(b, f));
@@ -487,7 +478,7 @@ function thinkText(n, text, live) {
   else el.textContent = to;
 }
 function thinkUpdate(asst, b) {
-  const k = 'r' + b.loop_id + ':' + b.request, thinking = asst.live && !b.text, o = isOpen(k, b), sig = b.reasoning ? k + thinking + o : '';
+  const k = 'r' + b.turn_id + ':' + b.response_index, thinking = asst.live && !b.text, o = isOpen(k, b), sig = b.reasoning ? k + thinking + o : '';
   if (sig === asst.thinkSig) return sig && thinkText(asst.think, b.reasoning, thinking);
   asst.thinkSig = sig;
   const n = sig ? thinkNode(b, k, thinking, o) : h('div');
@@ -500,7 +491,7 @@ function noteNode(labels) {
 function projectionNote(b) { return noteNode(MC.projectionLabels(b)); }
 function asstNode(b, i) {
   const live = i === liveIdx, n = h('div', 'a'), note = h('div');
-  n._asst = { note: part(note, noteNode), key: b.loop_id + ':' + b.request, live, thinkSig: '', md: { cache: null, toks: [], els: [] }, body: h('div', 'md'), think: h('div') };
+  n._asst = { note: part(note, noteNode), key: b.turn_id + ':' + b.response_index, live, thinkSig: '', md: { cache: null, toks: [], els: [] }, body: h('div', 'md'), think: h('div') };
   n.append(note, n._asst.think, n._asst.body);
   updateAsst(n, b);
   if (!live && b.text) n.append(answerActs(b, i));
@@ -547,17 +538,13 @@ function userActions(b) {
   sheet({
     key: 'uact', cls: 'dialog', title: 'Message', sub: b.at && stampAt(b.at),
     body: m => h('div', 'list', menuRow(m, 'copy', 'Copy', () => copyText(b.text)), menuRow(m, 'edit', 'Edit in composer', () => fillComposer(b.text)),
-      menuRow(m, 'retry', 'Send again', () => { if (!sending()) intent(turnStatus().busy ? MC.intents.queue(b.text) : MC.intents.submit(b.text)); })),
+      menuRow(m, 'retry', 'Send again', () => { if (!sending() && operating()) intent(turnStatus().busy ? MC.intents.queue(b.text) : MC.intents.submit(b.text)); }, { disabled: !operating() })),
   });
 }
 function turnClock(i) {
   const b = S.blocks[i];
-  for (let j = i - 1; j >= 0; j--) {
-    const x = S.blocks[j];
-    if (x.type === 'turn_end') return null;
-    if (x.type === 'user' && x.kind !== 'steering') return x.at == null ? null : x.at + (b.duration_ms || 0);
-  }
-  return null;
+  const at = typeof b.finished_at === 'string' ? Date.parse(b.finished_at) : b.finished_at;
+  return Number.isFinite(at) ? at : null;
 }
 // The failed turn's header with what the host said under it: the hint, the provider's own message clamped to three lines
 // (its toggle shows when the text overflows, see `place`) and the button that helps.
@@ -586,7 +573,7 @@ function blockNode(b, i) {
       return h('div', 'cmpx', h('button', { class: 'tr', 'data-k': k, disabled: !b.summary, 'aria-expanded': b.summary ? String(o) : null },
         h('span', 'si', icon('layers', 'sm')), h('span', 'vb', MC.compactionText(b)), h('span', 'tg', ''), b.summary && icon('chev', 'xs cv')), o && h('div', 'rsn', b.summary));
     }
-    case 'earlier': return h('div', 'ear', loadEarlierBtn(MC.plural(b.hidden_items, 'earlier item')));
+    case 'earlier': return h('div', 'ear', loadEarlierBtn(b.hidden_items == null ? '' : MC.plural(b.hidden_items, 'earlier item')));
     default: return h('div', 'x');
   }
 }
@@ -673,7 +660,7 @@ function flush() {
   for (let i = lo; i < hi; i++) {
     if (!dirty.has(i) && nodes[i - lo]) continue;
     const old = nodes[i - lo], b = bl[i];
-    if (old && old._asst && !roles[i - lo] && b.type === 'assistant' && old._asst.key === b.loop_id + ':' + b.request && old._asst.live === (i === liveIdx)) { updateAsst(old, b); continue; }
+    if (old && old._asst && !roles[i - lo] && b.type === 'assistant' && old._asst.key === b.turn_id + ':' + b.response_index && old._asst.live === (i === liveIdx)) { updateAsst(old, b); continue; }
     const x = renderBlock(b, i);
     if (!old) box.append(x);
     place(x, old);
@@ -728,8 +715,8 @@ export function renderTop() {
 const SUGG = [['Explain this project', 'Structure, entry points and how it fits together'], ['Run the tests and fix failures', 'Find what breaks and repair it'],
   ['Review my uncommitted changes', 'Spot bugs and risky edits'], ['Find TODOs', 'List open TODO and FIXME notes']];
 const emptyPart = part($('empty'), e => e.loading ? loading('Opening session…') : e.session ? h('div', 'muted', 'No messages yet.') : [
-  h('img', { class: 'appicon', src: '/icon.svg', alt: '' }), h('h2', '', 'What should we work on?'),
-  h('button', { class: 'where', 'aria-label': 'Change folder, ' + e.ws, onclick: () => openNew() }, icon('folder', 'sm'), h('span', '', MC.basename(e.ws)), icon('chevd', 'xs')),
+  h('img', { class: 'appicon', src: './icon.svg', alt: '' }), h('h2', '', 'What should we work on?'),
+  h('button', { class: 'where', 'aria-label': 'Change folder, ' + e.ws, onclick: () => openNew() }, icon('folder', 'sm'), h('span', '', e.ws ? MC.basename(e.ws) : 'Choose Agent and folder'), icon('chevd', 'xs')),
   h('div', 'hint mt6', MC.tilde(e.ws)),
   h('div', 'sugg', SUGG.map(([t, d]) => h('button', { onclick: () => fillComposer(t) }, t, h('small', '', d))))]);
 export function renderEmpty() {
@@ -747,12 +734,11 @@ log.addEventListener('scroll', () => {
 jump.addEventListener('click', toLatest);
 
 export function markDirty(indexes) { for (const i of indexes) dirty.add(i); schedule(); }
-// A denied tool row says who denied it: this device with the reason it gave, or, without `text`, another one.
-const decided = new Map();
-function markDenied(call, text) {
-  if (text == null && decided.has(call)) return;
-  decided.set(call, text == null ? { you: false } : { you: true, text });
-  const i = S.blocks.findIndex(b => b.type === 'tool' && b.call_id === call);
+// Record only denials this connection received as accepted from Host.
+const decided = new Set();
+function markDenied(call) {
+  decided.add(call);
+  const i = S.blocks.findIndex(b => b.type === 'tool' && b.tool_call_id === call);
   if (i >= 0) markDirty([i]);
 }
 // Find in the loaded transcript: matches are highlighted in place (CSS highlights), folds holding one open.
@@ -789,7 +775,7 @@ function runFind() {
     const open = key => { if (!isOpen(key, b)) dirty.add(i); opened.set(key, true); };
     if (r && r.fold) open(r.fold.key);
     if (r && r.group) open(r.group.key);
-    if (b.type === 'tool' && !b.detail.toLowerCase().includes(q)) open('t' + b.call_id);
+    if (b.type === 'tool' && !b.detail.toLowerCase().includes(q)) open('t' + b.tool_call_id);
   }
   flush();
   if (q) {
@@ -821,8 +807,6 @@ let apprId = null, apprAt = 0, lastKey = 0;
 export function syncApproval() {
   const a = S.state.interaction, m = findSheet('appr');
   if (!a) {
-    // Answered elsewhere: a denied tool row says so.
-    if (apprId && reply.call) markDenied(reply.call);
     apprId = null; reply.call = null;
     if (m) m.close(true);
     renderApprBar();
@@ -831,21 +815,19 @@ export function syncApproval() {
   const key = MC.interactionKey(S.state);
   if (key !== apprId) {
     apprId = key; apprAt = Date.now();
-    const t = a.kind === 'approval' && S.blocks.find(b => b.type === 'tool' && b.call_id === a.tool_call_id);
-    reply.call = t ? t.call_id : null;
+    const t = a.kind === 'approval' && S.blocks.find(b => b.type === 'tool' && b.tool_call_id === a.tool_call_id);
+    reply.call = t ? t.tool_call_id : null;
     announce(a.kind === 'approval' ? 'Approval needed' : 'Question: ' + (a.prompt || ''));
     notify(a.kind === 'approval' ? 'Approval needed: ' + MC.approvalLine(a) : a.prompt || 'A question is waiting', S.sid);
-    // The host can replace the interaction while its sheet is open: the next one never inherits a deny reason.
-    if (m) { reply.deny = false; reply.reason = ''; } else openApproval();
+    if (!m) openApproval();
   }
   renderApprBar();
 }
-// The sheet's own state: the denial form being filled in and the tool row the question belongs to.
-const reply = { deny: false, reason: '', call: null };
+// The tool identity belongs to the current native Host interaction.
+const reply = { call: null };
 function openApproval() {
-  reply.deny = false; reply.reason = '';
   const m = sheet({
-    key: 'appr', closeIcon: 'chevd', closeLabel: 'Minimize', footCls: 'col', deps: () => [S.reply.key, S.state.interaction, !!MC.answerPending(S), online(), reply.deny],
+    key: 'appr', closeIcon: 'chevd', closeLabel: 'Minimize', footCls: 'col', deps: () => [S.reply.key, S.state.interaction, !!MC.answerPending(S), operating()],
     head: hid => {
       const a = S.state.interaction, t = a.kind === 'approval' && MC.approvalTitle(a);
       return h('div', 'ahead', h('div', 'eicon', icon(t ? 'shield' : 'info')), h('div', '',
@@ -859,38 +841,34 @@ function openApproval() {
         const spec = S.reply.key === key && MC.textAnswer(S);
         if (spec) answer(spec.choice);
       } }, h('input', { class: 'tf', 'data-k': 'text-answer', value: S.reply.text, 'aria-label': 'Answer',
-        autocomplete: 'off', enterKeyHint: 'send', disabled: !online() || !!p,
-        oninput: e => { if (S.reply.key !== key) return; S.reply.text = e.target.value; const button = m.el.querySelector('[data-k="send-answer"]'); button.disabled = !MC.validAnswerText(S.reply.text) || !online() || !!MC.answerPending(S); } }));
-      if (a.kind !== 'approval') return h('div', 'opts', MC.approvalOptions(a).map(o => h('button', { class: 'btn', 'data-k': 'o' + o.n, disabled: !online() || !!p, onclick: () => answer(o.choice) },
+        autocomplete: 'off', enterKeyHint: 'send', disabled: !operating() || !!p,
+        oninput: e => { if (S.reply.key !== key) return; S.reply.text = e.target.value; const button = m.el.querySelector('[data-k="send-answer"]'); button.disabled = !MC.validAnswerText(S.reply.text) || !operating() || !!MC.answerPending(S); } }));
+      if (a.kind !== 'approval') return h('div', 'opts', MC.approvalOptions(a).map(o => h('button', { class: 'btn', 'data-k': 'o' + o.n, disabled: !operating() || !!p, onclick: () => answer(o.choice) },
         p && p.spec.choice === o.choice ? spin() : h('b', '', String(o.n)), h('span', '', o.label))));
       const x = MC.approvalBody(a);
       return [x.cmd && [h('pre', 'cmdbox', '$ ' + x.cmd), h('div', 'where2', 'in ' + MC.tilde(viewed().workspace))], x.diff && diffView(x.diff, prefs.wrap), x.text && h('pre', 'cmdbox', x.text)];
     },
     foot: () => {
-      const a = S.state.interaction, p = MC.answerPending(S), dis = !online() || !!p;
+      const a = S.state.interaction, p = MC.answerPending(S), dis = !operating() || !!p;
       if (a.kind === 'text') return h('button', { class: 'btn primary', 'data-k': 'send-answer', disabled: dis || !MC.validAnswerText(S.reply.text),
         form: 'text-answer', type: 'submit' }, p && spin(), 'Send answer');
       if (a.kind !== 'approval') return hover.matches && h('div', 'akeys', 'Press 1–' + a.options.length + ' to answer');
       const ans = (o, cls, fn) => h('button', { class: 'btn ' + cls, 'data-k': o.choice, disabled: dis, onclick: fn || (() => answer(o.choice)) }, p && p.spec.choice === o.choice && spin(), o.label);
-      const [allow, session, deny] = MC.approvalOptions(a);
-      if (reply.deny) return [h('form', { class: 'reason', onsubmit: e => { e.preventDefault(); answer('deny', reply.reason.trim()); } },
-        h('input', { class: 'tf', id: 'why', 'data-k': 'why', value: reply.reason, placeholder: 'Tell the agent why (optional)', 'aria-label': 'Reason for denying', autocomplete: 'off', enterKeyHint: 'send', oninput: e => { reply.reason = e.target.value; } })),
-        h('div', 'row2', h('button', { class: 'btn', onclick: () => { reply.deny = false; m.refresh(); } }, 'Back'), ans(deny, 'dangerfill', () => answer('deny', reply.reason.trim())))];
-      return [ans(allow, 'primary'), session && ans(session, ''), ans({ ...deny, label: deny.label + '…' }, 'danger', () => { reply.deny = true; m.refresh(); m.el.querySelector('#why').focus(); }),
-        hover.matches && h('div', 'akeys', 'Y allow · A allow for this session · N deny')];
+      const options = MC.approvalOptions(a), allow = options.find(o => o.choice === 'allow_once'), deny = options.find(o => o.choice === 'deny');
+      return [allow && ans(allow, 'primary'),
+        h('button', { class: 'btn', 'data-k': 'future-approval', disabled: dis, onclick: openApprovals }, 'Future turn approval…'),
+        deny && ans(deny, 'danger'), hover.matches && h('div', 'akeys', 'Y allow once · N deny')];
     },
     onClose: () => renderApprBar(),
   });
 }
-// Only a denial is recorded on its tool row, with the reason: it explains why the tool did not run.
-function answer(choice, message) {
+// Answer only the captured interaction; the receipt confirms acceptance of the answer.
+function answer(choice) {
   const a = S.state.interaction, call = reply.call;
-  if (!a || MC.answerPending(S)) return;
-  const key = MC.interactionKey(S.state);
-  intent(MC.intents.answer(a.loop_id, a.id, choice, message || undefined), ack => {
-    if (MC.interactionKey(S.state) !== key) return;
-    if (!ack.ok) return toast(MC.errorText(ack.error), ack.error === 'stale' ? null : 'error');
-    if (call && choice === 'deny') markDenied(call, 'Denied' + (message ? ': “' + message + '”' : ''));
+  if (!a || MC.answerPending(S) || !operating()) return;
+  intent(MC.intents.answer(a.turn_id, a.id, choice, a.load_id), ack => {
+    if (!ack.ok) return toast(MC.errorText(ack.error), 'error');
+    if (call && choice === 'deny') markDenied(call);
   });
 }
 const apprPart = part($('apprbar'), b => b && [icon('hand', 'sm'), h('span', '', b), h('button', { class: 'btn sm', onclick: () => openApproval() }, 'Review')]);
