@@ -1,0 +1,19 @@
+{
+  "name": "MiniCore Web Host",
+  "framework_instructions": "",
+  "models": [{
+    "model": "provider/chat",
+    "api": "chat_completions",
+    "endpoint": "https://provider.example.invalid/v1/chat/completions",
+    "provider_model": "replace-with-provider-model",
+    "api_key_env": "MINICORE_MODEL_KEY",
+    "context_window": 128000,
+    "supported_reasoning": ["auto"],
+    "supports_tools": true,
+    "request_timeout_ms": 120000
+  }],
+  "tools": [{"name": "read"}, {"name": "write"}, {"name": "edit"}, {"name": "apply_patch"}, {"name": "bash"}, {"name": "agent"}],
+  "workspace_roots": ["/absolute/path/to/workspace"],
+  "network": {"listen": "127.0.0.1:8443", "access_key_env": "MINICORE_HOST_ACCESS_KEY"},
+  "logging": {"level": "info", "output": {"kind": "stderr"}}
+}

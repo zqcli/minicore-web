@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HOST_REVISION: a0b560ee59c9b04057361ede2757e99f21295613
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  static:
+    name: Static checks, unit tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: minicore-web-static
+          path: dist/
+          if-no-files-found: error
+
+  host-browser:
+    name: Real Host WSS and desktop/mobile Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MINICORE_HOST_BIN: ${{ github.workspace }}/.host/target/debug/minicore-host
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: zqcli/minicore-host
+          ref: ${{ env.HOST_REVISION }}
+          path: .host
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Build the pinned real Host
+        working-directory: .host
+        run: cargo +1.90.0 build --package minicore-host --locked
+      - name: Verify application actions against actual TLS/WSS owners
+        run: npm run test:integration
+      - name: Verify retained desktop and mobile UI
+        run: npm run test:browser
+      - name: Keep browser evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: browser-screenshots
+          path: test-results/
+          if-no-files-found: warn
