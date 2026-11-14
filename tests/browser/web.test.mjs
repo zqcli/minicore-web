@@ -113,7 +113,10 @@ test('desktop UI bootstraps, streams, approves real tools, renames and restores 
     assert.ok(f.methods.every(method => method === 'initialize' || method.includes('.')));
     assert.deepEqual(f.errors, []);
     await f.save('desktop-restored');
-  } catch (error) { await f.save('desktop-failure'); throw error; }
+  } catch (error) {
+    t.diagnostic(JSON.stringify({ pageErrors: f.errors, recentMethods: f.methods.slice(-30) }));
+    await f.save('desktop-failure'); throw error;
+  }
 });
 
 test('mobile layout keeps directory creation, streaming and drawer controls usable', { timeout: 60000 }, async t => {
@@ -143,5 +146,8 @@ test('mobile layout keeps directory creation, streaming and drawer controls usab
     await page.locator('#nav').getByRole('button', { name: 'Close', exact: true }).click();
     await f.save('mobile-conversation');
     assert.deepEqual(f.errors, []);
-  } catch (error) { await f.save('mobile-failure'); throw error; }
+  } catch (error) {
+    t.diagnostic(JSON.stringify({ pageErrors: f.errors, recentMethods: f.methods.slice(-30) }));
+    await f.save('mobile-failure'); throw error;
+  }
 });
