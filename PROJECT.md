@@ -38,12 +38,28 @@ preserving its UI while using MiniCore Host WSS and native owner contracts.
   lifecycle/deletion, read-only connections and canonical history.
 - The model SSE endpoint is a controlled local fixture, not a live external
   provider. No live-provider result is claimed.
-- Desktop/mobile Chromium scenarios and fixed-source Host integration are
-  configured in CI. The local desktop Chromium launch is blocked by the runtime's
-  process/socket restrictions; browser execution is verified in CI separately.
+- Desktop/mobile Chromium scenarios and fixed-source Host integration pass in
+  CI. The local desktop Chromium launch remains blocked by the runtime's
+  process/socket restrictions; browser execution was verified remotely.
+- Real Chromium first-bootstrap scenarios exposed a missing-Session access in
+  operation dispatch. [The Session guard fix](https://github.com/zqcli/minicore-web/commit/452e9d5dbd3af571f9f7d4d4a700b8566db478b2)
+  preserves the captured native target. [The mobile drawer test](https://github.com/zqcli/minicore-web/commit/42014d87c39418f42dc0c5d283a9db69d58730f3)
+  now waits for the drawer to become hidden and checks that `main.inert` is false.
+- Verified functional checkpoint:
+  `42014d87c39418f42dc0c5d283a9db69d58730f3`, tree
+  `2cc0a4b138081687b5c6109a844c96d2b535a5db`.
+  [CI run 43555928972](https://github.com/zqcli/minicore-web/actions/runs/43555928972)
+  completed successfully: the [static job](https://github.com/zqcli/minicore-web/actions/runs/43555928972/job/132328646121)
+  and [real Host plus Chromium job](https://github.com/zqcli/minicore-web/actions/runs/43555928972/job/132328646511)
+  passed all 64 unit/UI, four real Host TLS/WSS integration and two desktop/mobile
+  Chromium cases, with no skipped cases. The Host pin remains
+  `a0b560ee59c9b04057361ede2757e99f21295613` (0.11.1, SPEC 4.10.3).
+- [Screenshot artifact 14098740699](https://github.com/zqcli/minicore-web/actions/runs/43555928972/artifacts/14098740699)
+  contains four PNGs. Desktop streaming/restored views and mobile
+  conversation/drawer views were visually checked. The original CSS remains
+  byte-identical; the frontend migration scope is unchanged.
 - The GitHub connector publishes the locally checked trees in their original
   logical order. Commit metadata can differ from local preparation; tree hashes
   are checked before moving `dev`, with no force update or published-history rewrite.
 - Backend and frontend workers were explicitly requested with `gpt-6-astra`,
   `max` reasoning, in parallel. Runtime settings are not independently attested.
-- CI publication/results are recorded after the remote runs complete.
