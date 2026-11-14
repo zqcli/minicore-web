@@ -130,12 +130,6 @@ const titled = title => title || 'Untitled session';
 const midTrunc = (s, n = 17) => s.length <= n ? s : s.slice(0, (n - 1) >> 1) + '…' + s.slice(-((n - 1) >> 1));
 
 const mergeReturned = (cur, text) => cur ? cur + '\n' + text : text;
-function otherDevices(devices, me) {
-  const rest = devices.slice(), i = rest.findIndex(d => d.name === me);
-  if (i >= 0) rest.splice(i, 1);
-  return rest;
-}
-
 function deviceName(ua, touchPoints = 0) {
   const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || (/Macintosh/.test(ua) && touchPoints > 1) ? 'iPad'
     : /Android/.test(ua) ? 'Android' : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows'
@@ -701,7 +695,7 @@ function recentWorkspaces(sessions, max = 6) {
 }
 
 export {
-  WINDOW, inline, parseMd, mdInc, backoff, basename, plural, titled, quiet, midTrunc, mergeReturned, otherDevices, deviceName,
+  WINDOW, inline, parseMd, mdInc, backoff, basename, plural, titled, quiet, midTrunc, mergeReturned, deviceName,
   installOffer, intents, queries, fs, createStore, intent, newDraftVersion, captureTarget, syncReply, pending, disconnect,
   sendAgain, discardUnconfirmed, MAX_INTENTS, MAX_INTENT_TEXT_BYTES, unconfirmed, unreachable, fsError, errorText, stamp, relTime, sessionLayout, groupRows, PINNED_KEY, recent, finishedText, prunePins,
   fmtElapsed, fmtTok, fmtNum, groupTools, foldTurns, findBlocks, foldText, toolInfo, parseDiff, diffStats, liveBlock, turnEnd,

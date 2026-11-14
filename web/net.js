@@ -6,6 +6,7 @@ import { $, closeAll, fill, h, icon, spin, toast } from './ui.js';
 export const S = MC.createStore();
 export let HOST = '';
 const on = {}, app = new HostApplication(S, (event, effects) => on.message?.(event, effects));
+let authSession = 0;
 let client = null, config = null, halted = false, screen = '', retryTimer = 0, attempt = 0, connecting = false;
 export const bind = callbacks => Object.assign(on, callbacks);
 export const repaint = () => on.render?.();
@@ -25,7 +26,7 @@ export const pump = () => {};
 
 function run(operation) {
   if (!operation) { toast('Local confirmation buffer is full · resolve or discard an unconfirmed message', 'error'); return false; }
-  operation.navigation = app.navigation;
+  operation.authSession = authSession; operation.navigation = app.navigation;
   const session = S.state?.sessions.find(s => s.id === operation.target.session_id && s.agent_id === operation.target.agent_id);
   operation.config_revision = operation.spec.expected_config_revision ?? (S.state?.session?.id === operation.target.session_id ? S.state.session.config_revision : session?.config_revision);
   if (operation.kind === 'update_agent') operation.config_revision = operation.spec.expected_config_revision ?? S.state.agent?.config_revision;
@@ -40,6 +41,7 @@ function run(operation) {
   return true;
 }
 function finish(operation, result) {
+  if (operation.authSession !== authSession) return;
   const current = operation.target.session_id ? S.sid === operation.target.session_id && S.state?.session?.agent_id === operation.target.agent_id
     : operation.navigation === app.navigation || result.receipt?.session_id === S.sid;
   const ack = { ...operation, ...result, current, text: result.text ?? operation.text };
@@ -109,6 +111,7 @@ async function connect(key, login = false) {
     on.message?.(null, { welcome: true, snapshot: true, state: true });
   } catch (error) {
     if (client !== connection) return;
+    connection.close();
     if (login || error.kind === 'business' || error.kind === 'protocol') { halted = true; signin(null, error.message); }
     else { if (!S.state) gate(error.message, true); retryTimer = setTimeout(() => connect(), MC.backoff(attempt++)); }
   } finally { connecting = false; repaint(); }
@@ -126,6 +129,12 @@ $('pweye').addEventListener('click', () => {
   button.firstChild.firstChild.setAttribute('href', visible ? '#i-eyeoff' : '#i-eye');
 });
 export function signOut() {
+  authSession++;
+  // A submitted draft can outlive sign-out; preserve its duplicate-send warning.
+  for (const operation of S.intents.values()) if (operation.text != null && operation.draft) {
+    const { key, version } = operation.draft;
+    if (localStorage.getItem(key + '.version') === version) localStorage.setItem(key + '.unknown', JSON.stringify({ version, origins: [{ id: null }] }));
+  }
   halted = true; clearTimeout(retryTimer);
   if (HOST) sessionStorage.removeItem(accessKeyName(HOST));
   const previous = client; client = null; previous?.close(); app.client = null; app.navigation++;

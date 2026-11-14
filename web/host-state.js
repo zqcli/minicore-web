@@ -86,7 +86,7 @@ export class SessionObservation {
   baseline(result) {
     for (const event of result.initial_states) this.event(event);
     for (const position of result.output_positions) if (this.matches(position)) {
-      this.buffer(position, position.channel, position.end);
+      this.buffer(position, position.channel, position.end).fault = null;
       if (position.kind === 'model' && !this.models.has(modelKey(position))) { this.models.set(modelKey(position), assistantBlock(position, [], true)); this.stampOrder(modelKey(position)); }
     }
   }
