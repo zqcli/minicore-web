@@ -28,7 +28,7 @@ function run(operation) {
   if (!operation) { toast('Local confirmation buffer is full · resolve or discard an unconfirmed message', 'error'); return false; }
   operation.authSession = authSession; operation.navigation = app.navigation;
   const session = S.state?.sessions.find(s => s.id === operation.target.session_id && s.agent_id === operation.target.agent_id);
-  operation.config_revision = operation.spec.expected_config_revision ?? (S.state?.session?.id === operation.target.session_id ? S.state.session.config_revision : session?.config_revision);
+  operation.config_revision = operation.spec.expected_config_revision ?? (S.state?.session && S.state.session.id === operation.target.session_id ? S.state.session.config_revision : session?.config_revision);
   if (operation.kind === 'update_agent') operation.config_revision = operation.spec.expected_config_revision ?? S.state.agent?.config_revision;
   operation.controller_revision = app.observation?.state?.controller_revision;
   operation.queuedText = S.state?.queue.find(q => q.id === operation.spec.input_id)?.text;
