@@ -91,3 +91,40 @@ test('Web application actions and workspace projections use actual Host contract
   assert.equal(observer.app.operating, false);
   assert.ok((await observer.app.query(MC.queries.files('README'), MC.captureTarget(observer.store, {}))).paths.includes('README.md'));
 });
+
+test('manual compaction and draft Session creation preserve native lifecycle results', { timeout: 60000 }, async t => {
+  const fixture = await hostFixture(); t.after(() => fixture.close());
+  const ui = application(), { app, store } = ui;
+  const config = { initial_agent: initialAgent(), templates: [] };
+  config.initial_agent.config.session_defaults.execution.compaction.target_percent = 1;
+  await app.initialize(await fixture.connect(), config);
+  await ui.execute(MC.intents.newSession(fixture.workspace, null, config.initial_agent));
+  await ui.execute(MC.intents.submit('Remember this migration decision'));
+  const priorAnswer = 'Keep the existing UI and use native Host WSS. '.repeat(3000);
+  (await fixture.provider.next()).finish(priorAnswer);
+  await ui.wait(() => !store.state.status.busy && store.blocks.some(block => block.text === priorAnswer), 'first completed Turn');
+  await ui.execute(MC.intents.submit('Keep the newest Turn available'));
+  (await fixture.provider.next()).finish('This newest Turn remains outside the compacted prefix.');
+  await ui.wait(() => !store.state.status.busy && store.blocks.some(block => block.text === 'This newest Turn remains outside the compacted prefix.'), 'second history group');
+  await ui.execute(MC.intents.compact());
+  const compact = await fixture.provider.next().catch(async error => {
+    const context = await app.query(MC.queries.context(), MC.captureTarget(store, {}));
+    error.message += ': ' + JSON.stringify(context.native.compaction);
+    throw error;
+  });
+  compact.finish('The UI is unchanged; the backend is native Host WSS.');
+  await ui.wait(() => !store.state.status.compacting && store.blocks.some(block => block.type === 'compaction'), 'finished manual compaction');
+  const agentId = store.state.selected_agent_id, firstId = store.sid;
+  await ui.execute(MC.intents.newSession(fixture.workspace, agentId));
+  assert.equal(store.state.session, null);
+  assert.equal(store.state.sessions.length, 1, 'a local new-session draft has no server side effect');
+  await ui.execute(MC.intents.submit('Create the next Session from this draft'));
+  (await fixture.provider.next()).finish('The second Session is ready.');
+  await ui.wait(() => !store.state.status.busy && store.blocks.some(block => block.text === 'The second Session is ready.'), 'second completed Turn');
+  assert.notEqual(store.sid, firstId);
+  assert.equal(store.state.sessions.length, 2);
+  const secondId = store.sid;
+  await ui.execute(MC.intents.deleteSession(secondId));
+  await ui.wait(() => !store.state.sessions.some(session => session.id === secondId), 'deleted Session removed from catalog');
+  assert.notEqual(store.state.session?.id, secondId, 'the UI cannot keep a deleted Session as an actionable target');
+});
