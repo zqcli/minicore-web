@@ -144,6 +144,9 @@ test('mobile layout keeps directory creation, streaming and drawer controls usab
     await page.getByRole('searchbox', { name: 'Search sessions', exact: true }).fill('review');
     await f.save('mobile-drawer');
     await page.locator('#nav').getByRole('button', { name: 'Close', exact: true }).click();
+    await page.locator('#nav').waitFor({ state: 'hidden' });
+    await page.locator('#blocks').getByText('手机端迁移成功🙂', { exact: true }).waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#main').evaluate(element => element.inert), false);
     await f.save('mobile-conversation');
     assert.deepEqual(f.errors, []);
   } catch (error) {
