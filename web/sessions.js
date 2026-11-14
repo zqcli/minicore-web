@@ -378,7 +378,7 @@ export function rename(id) {
     body: () => h('form', { novalidate: true, onsubmit: save, id: 'renf' },
       h('input', { class: 'tf', type: 'text', value: d.value, maxLength: 200, readOnly: d.busy, 'data-focus': true, 'data-k': 'ren', 'aria-label': 'Session title',
         placeholder: 'Session title', autocomplete: 'off', enterKeyHint: 'done', oninput: e => { d.value = e.target.value; } }),
-      h('p', 'hint mt8', 'Leave empty to use the first message'),
+      h('p', 'hint mt8', 'Leave empty to display “Untitled session”'),
       d.err && errBox(d.err, 'mt8')),
     foot: () => [h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'),
       h('button', { class: 'btn primary', type: 'submit', form: 'renf', 'data-k': 'save', disabled: d.busy || !operating() }, d.busy && spin(), d.busy ? 'Saving…' : 'Save')],
@@ -438,7 +438,18 @@ export function openNew() {
   sheet({
     key: 'new', cls: 'full', title: 'New session', onClose: () => { if (picker === me) picker = null; }, deps: () => [picker && { ...picker, roots: !!picker.roots }, operating(), S.state.agents],
     body: renderNew, foot: () => h('button', { class: 'btn primary block', 'data-k': 'start', disabled: !picker.sel || (!picker.agent_id && !picker.bootstrap) || picker.starting || !operating(), onclick: () => {
-      if (intent(MC.intents.newSession(picker.sel, picker.agent_id, picker.bootstrap), a => { if (picker !== me) return; picker.starting = false; if (a.ok) closeAll(); else { picker.err = MC.errorText(a.error); refreshSheets(); } })) picker.starting = true;
+      if (intent(MC.intents.newSession(picker.sel, picker.agent_id, picker.bootstrap), a => {
+        if (picker !== me) return;
+        picker.starting = false;
+        if (a.ok) closeAll();
+        else {
+          const receipt = a.receipt;
+          if (picker.bootstrap && receipt?.kind === 'agent.create' && receipt.agent_id && receipt.result?.steps?.agent?.status === 'succeeded') {
+            picker.bootstrap = null; picker.agent_id = receipt.agent_id;
+          }
+          picker.err = MC.errorText(a.error); refreshSheets();
+        }
+      })) picker.starting = true;
       refreshSheets();
     } }, picker.starting && spin(), picker.sel ? 'Start in ' + MC.basename(picker.sel) : 'Choose a folder'),
   });
