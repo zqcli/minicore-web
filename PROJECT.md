@@ -1,4 +1,22 @@
-# MiniCore Web 0.1.0
+# MiniCore Web
+
+## 0.1.1 upgrade — design accepted, implementation in progress
+
+- 2026-11-16: user authorized the Web upgrade following the read-only TUI/Web
+  review. `SPEC.md` records the behavior before implementation. Planned release:
+  0.1.1; companion Host 0.12.5 / SPEC 4.11.4, fixed revision
+  `355d4b8bac4a3a634cd83a49fbf33fea7b67a262`.
+- Scope: Host launch/CI baseline, complete historical and recalled errors with
+  original targets, coordinated Session catalog, asynchronous compaction failure,
+  stable short Session IDs, bounded previews, captured Context/menu state and
+  global IME guards. Preserve browser keyboard, native editing and WSS ownership.
+- Three workers requested with `gpt-6-astra`, `max` reasoning own disjoint state,
+  rendering and browser UI paths. Effective runtime settings are not independently
+  attested. The coordinator owns specification, deployment, test fixtures and
+  combined real-Host/browser validation.
+- No implementation or new-version test result is claimed at this design checkpoint.
+
+## 0.1.0 delivery record
 
 ## Goal
 

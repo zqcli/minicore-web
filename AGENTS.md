@@ -7,6 +7,8 @@ ported from minicore-tui 0.9.9, source commit
 - Work on `dev` and preserve the existing layout, styling, incremental Markdown,
   tool cards, keyboard/mobile interactions and scroll anchors. Keep the first
   release focused on migrating working features.
+- `SPEC.md` is the Web design baseline (0.1.1). Its browser contracts accompany
+  Host 0.12.5 / SPEC 4.11.4; follow the exact Host revision recorded there.
 - Host owns Agents, Sessions, Turns, queues, configuration, approvals, tools,
   persistence and operation rights. The browser owns presentation and local
   preferences/drafts. Use native authenticated Host WSS JSON-RPC directly.
