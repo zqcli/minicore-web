@@ -107,11 +107,20 @@ test('same-title Sessions keep identities, captured Context status and reactive 
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#menu').click();
+    await page.waitForFunction(() => {
+      const nav = document.getElementById('nav');
+      return nav.classList.contains('on') && getComputedStyle(nav).transform === 'none';
+    });
     const badges = page.locator('#nav .sid');
     assert.equal(await badges.count(), 2);
     for (const badge of await badges.all()) {
       const bounds = await badge.boundingBox();
-      assert.ok(bounds && bounds.width > 35 && bounds.x >= 0 && bounds.x + bounds.width <= 390);
+      const drawer = await page.locator('#nav').evaluate(nav => ({
+        bounds: nav.getBoundingClientRect().toJSON(),
+        transform: getComputedStyle(nav).transform, viewport: innerWidth
+      }));
+      assert.ok(bounds && bounds.width > 35 && bounds.x >= 0 && bounds.x + bounds.width <= 390,
+        'short ID remains readable inside the settled drawer: ' + JSON.stringify({ bounds, drawer }));
     }
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     await f.save('upgrade-session-identities-mobile');
@@ -171,6 +180,9 @@ test('browser IME guard preserves working Turn and existing follow-up/steer keyb
 
 test('large native tool result has a bounded preview with complete explicit Open and Copy', { timeout: 90000 }, async t => {
   const agent = initialAgent(); agent.config.session_defaults.execution.approval = 'auto';
+  // This case measures full tool data and its display copy, independent of an
+  // automatic summary request triggered by the intentionally oversized output.
+  agent.config.session_defaults.execution.compaction.enabled = false;
   const f = await browserFixture(t, { agent }), { page } = f;
   await captureFailure(f, 'upgrade-tool-preview', async () => {
     const original = '中🙂'.repeat(200000);
