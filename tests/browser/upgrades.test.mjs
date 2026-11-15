@@ -192,29 +192,67 @@ test('large native tool result has a bounded preview with complete explicit Open
     await send(page, 'Read the complete large single line');
     (await f.provider.next()).tools([{ id: 'large-preview', name: 'read', arguments: { path: 'large-output.txt', limit: 1 } }]);
     const afterTool = await f.provider.next();
-    assert.ok(afterTool.body.messages.some(m => m.role === 'tool' && m.content.includes(original)), 'actual tool body reaches Host/model in full');
+    const nativeTool = afterTool.body.messages.find(m => m.role === 'tool' && m.content.includes(original));
+    assert.ok(nativeTool, 'actual tool body reaches Host/model in full');
     afterTool.finish('Large output preserved.'); await idle(page);
     const row = page.locator('[data-k="tlarge-preview"]');
     if (!await row.isVisible()) await page.locator('#blocks .fold[aria-expanded="false"]').click();
     await row.click();
     const tool = page.locator('.tl').filter({ has: page.locator('[data-k="tlarge-preview"]') });
     const preview = tool.locator('pre.out');
-    assert.ok((await preview.textContent()).length <= 16384, 'card DOM contains a bounded display copy');
+    assert.ok((await preview.textContent()).length <= 4096, 'card DOM contains a bounded display copy');
     assert.ok((await tool.innerText()).toLowerCase().includes('truncat'));
     await f.save('upgrade-large-preview');
     f.stage = 'open complete tool output';
     await tool.getByRole('button', { name: 'Open', exact: true }).click();
-    f.stage = 'read complete tool output DOM';
+    f.stage = 'read complete tool output pages';
     const output = page.getByRole('dialog').last();
-    assert.ok((await output.locator('pre').textContent()).includes(original));
+    const previous = output.getByRole('button', { name: 'Previous page', exact: true });
+    const next = output.getByRole('button', { name: 'Next page', exact: true });
+    assert.equal(await previous.isDisabled(), true);
+    const pages = [];
+    while (true) {
+      f.stage = 'read complete tool output page ' + (pages.length + 1);
+      const text = await output.locator('pre').textContent();
+      assert.ok(text.length > 0 && text.length <= 16384, 'each reading page has a bounded DOM');
+      pages.push(text);
+      assert.ok(pages.length < 100, 'page navigation makes progress through this fixture');
+      if (await next.isDisabled()) break;
+      await next.click();
+    }
+    assert.ok(pages.length > 1);
+    assert.equal(pages.join(''), nativeTool.content, 'every page reconstructs the exact native tool result');
+    await previous.click();
+    assert.equal(await output.locator('pre').textContent(), pages.at(-2));
+    const wrap = output.getByRole('button', { name: 'Wrap', exact: true });
+    await wrap.click();
+    assert.equal(await wrap.getAttribute('aria-pressed'), 'false');
+    assert.equal(await output.locator('pre').textContent(), pages.at(-2));
+    await wrap.click();
+    assert.equal(await wrap.getAttribute('aria-pressed'), 'true');
     f.stage = 'copy complete tool output';
     await f.context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await output.getByRole('button', { name: 'Copy', exact: true }).click();
     await output.locator('button.done').waitFor();
     f.stage = 'verify complete clipboard text';
-    assert.ok((await page.evaluate(() => navigator.clipboard.readText())).includes(original));
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), nativeTool.content);
     f.stage = 'capture complete tool output panel';
     await f.save('upgrade-large-output-open');
+    await output.getByRole('button', { name: 'Close', exact: true }).click();
+    f.stage = 'use paged output on mobile';
+    await page.setViewportSize({ width: 390, height: 844 });
+    await tool.getByRole('button', { name: 'Open', exact: true }).click();
+    assert.equal(await output.locator('pre').textContent(), pages[0]);
+    for (const control of [previous, next, output.getByRole('button', { name: 'Copy', exact: true })]) {
+      const bounds = await control.boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y + bounds.height <= 844,
+        'reading controls fit the mobile viewport: ' + JSON.stringify(bounds));
+    }
+    await next.click(); assert.equal(await output.locator('pre').textContent(), pages[1]);
+    await previous.click(); assert.equal(await output.locator('pre').textContent(), pages[0]);
+    await f.save('upgrade-large-output-mobile');
+    await output.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Message', exact: true }).fill('The reader remains responsive.');
   });
 });
 

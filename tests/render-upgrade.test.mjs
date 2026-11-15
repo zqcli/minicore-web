@@ -34,6 +34,42 @@ test('bounded previews cap one-line Unicode and many-line text before display wi
   assert.deepEqual(MC.boundedPreview('', { maxLines: 0, maxChars: 0 }), { text: '', truncated: false });
 });
 
+test('full-output ranges keep empty and ordinary text on one exact page', () => {
+  for (const text of ['', 'plain output', '中🙂\r\n', 'before\n\n  after  \n', 'x'.repeat(16384)]) {
+    assert.deepEqual(MC.textPageRanges(text), [{ start: 0, end: text.length }]);
+  }
+  assert.deepEqual(MC.textPageRanges('', 2), [{ start: 0, end: 0 }]);
+});
+
+test('full-output page edges never split a surrogate pair or lose the final newline', () => {
+  const text = 'a🙂b🙂\n';
+  assert.deepEqual(MC.textPageRanges(text, 2).map(({ start, end }) => text.slice(start, end)), ['a', '🙂', 'b', '🙂', '\n']);
+  assert.deepEqual(MC.textPageRanges(text, 3).map(({ start, end }) => text.slice(start, end)), ['a🙂', 'b🙂', '\n']);
+  const edge = 'x'.repeat(16383) + '🙂\n';
+  assert.deepEqual(MC.textPageRanges(edge), [{ start: 0, end: 16383 }, { start: 16383, end: edge.length }]);
+  assert.deepEqual(MC.textPageRanges('x'.repeat(16382) + '🙂'), [{ start: 0, end: 16384 }]);
+  for (const maxChars of [-1, 0, 1, 2.5, NaN, Infinity]) assert.throws(() => MC.textPageRanges(text, maxChars), RangeError);
+});
+
+test('large Unicode and multiline outputs reconstruct exactly from bounded index-only pages', () => {
+  for (const text of ['中🙂'.repeat(200000) + '\n', Array.from({ length: 10000 }, (_, i) => i + '\t中🙂\r\n\n').join('')]) {
+    const ranges = MC.textPageRanges(text), pages = [];
+    let previousEnd = 0;
+    assert.ok(ranges.length > 1);
+    for (const range of ranges) {
+      assert.deepEqual(Object.keys(range), ['start', 'end']);
+      assert.equal(range.start, previousEnd);
+      assert.ok(range.end > range.start && range.end - range.start <= 16384);
+      const page = text.slice(range.start, range.end);
+      assert.equal(page.isWellFormed(), true);
+      pages.push(page); previousEnd = range.end;
+    }
+    assert.equal(previousEnd, text.length);
+    assert.equal(pages.join(''), text);
+    assert.equal(pages.at(-1).endsWith('\n'), true);
+  }
+});
+
 test('native large tool result has a bounded card but complete Open, Copy, Find and Markdown export', () => {
   const text = '界🙂'.repeat(200000), result = Object.freeze({ outcome: 'success', output: Object.freeze({ content: text }) });
   const view = new SessionObservation(session);

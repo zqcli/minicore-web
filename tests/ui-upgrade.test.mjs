@@ -231,28 +231,89 @@ test('first Agent preview renders configured Agent and Role instructions indepen
   assert.equal(textOf(sheets.at(-1).body()).includes('Agent instructions'), false);
 });
 
-test('explicit output opens and copies the full native string without preview truncation', () => {
-  const sheets = [], context = vm.createContext({ h, MC, copyButton, icon, prefs: { wrap: true }, sheet: options => sheets.push(options), spin() {}, errBox() {}, loadFull() {} });
-  vm.runInContext(section('sessions.js', 'export function openOutput(', 'function loadFull('), context);
-  const text = '中🙂'.repeat(200000);
-  context.openOutput({ name: 'read', detail: '/work/large', state: 'completed', output_text: text, output_lines: 1, output_dropped: 0 });
+function outputPanel(block) {
+  const sheets = [], reads = [], focused = [], prefs = { wrap: true }, context = vm.createContext({ h, MC, copyButton, icon, prefs, spin() {}, errBox() {},
+    requestAnimationFrame: callback => callback(), ask: (spec, callback) => reads.push({ spec, callback }),
+    sheet: options => { sheets.push(options); return { refresh() {}, el: { querySelector: selector => ({ focus: options => focused.push({ selector, options }) }) } }; },
+  });
+  vm.runInContext(section('sessions.js', 'export function openOutput(', 'export function compactNow('), context);
+  context.openOutput({ name: 'read', detail: '/work/output', state: 'completed', tool_call_id: 'tool-a', output_dropped: 0, ...block });
   const detail = sheets[0];
-  assert.equal(nodes(detail.body()).find(n => n.tag === 'pre').children[0], text);
-  assert.equal(button(detail.foot(), 'Copy').props.copiedText, text);
-  assert.equal(button(detail.foot(), 'Load full output'), undefined);
+  return { detail, reads, focused, prefs, pre: () => nodes(detail.body()).find(n => n.tag === 'pre'),
+    pageButton: label => nodes(detail.foot()).find(n => n.props['aria-label'] === label),
+    pageLabel: () => textOf(nodes(detail.foot()).find(n => n.props.class === 'out-page-number')) };
+}
+
+test('ordinary and empty output retain single-page controls, full Copy and local Wrap', () => {
+  for (const text of ['', 'Small output\n完整🙂\n']) {
+    const { detail, pre, pageButton, prefs } = outputPanel({ output_text: text, output_lines: text ? 3 : 0 });
+    assert.equal(pre().children[0], text);
+    assert.equal(button(detail.foot(), 'Copy').props.copiedText, text);
+    assert.equal(pageButton('Previous page'), undefined); assert.equal(pageButton('Next page'), undefined);
+    assert.equal(button(detail.foot(), 'Load full output'), undefined);
+    const body = { scrollTop: 5, scrollLeft: 7, scrollHeight: 120 };
+    detail.after(body); assert.equal(body.scrollTop, 120, 'ordinary output retains its existing initial scroll behavior');
+    body.scrollTop = 45;
+    button(detail.foot(), 'Wrap').props.onclick(); detail.after(body);
+    assert.equal(pre().props.class, 'out view'); assert.equal(pre().children[0], text);
+    assert.equal(body.scrollTop, 45); assert.equal(prefs.wrap, true, 'panel Wrap does not change the stored preference');
+    assert.equal(button(detail.foot(), 'Wrap').props['data-k'], 'output-wrap');
+  }
+});
+
+test('large native output mounts bounded exact pages and copies the complete original on every page', () => {
+  const text = 'Head\n' + '中🙂'.repeat(200000) + '\n', { detail, pre, pageButton, pageLabel, focused, prefs } = outputPanel({ output_text: text, output_lines: 3 });
+  const pageCount = Number(/Page 1 of (\d+)/.exec(pageLabel())[1]), parts = [];
+  assert.ok(pageCount > 1); assert.equal(pageButton('Previous page').props.disabled, true);
+  const body = { scrollTop: 300, scrollLeft: 100, scrollHeight: 9000 };
+  for (let index = 0; index < pageCount; index++) {
+    const part = pre().children[0];
+    assert.ok(part.length > 0 && part.length <= 16384);
+    assert.ok(!/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(part), 'pages do not split a Unicode scalar');
+    parts.push(part); assert.equal(pageLabel(), 'Page ' + (index + 1) + ' of ' + pageCount);
+    assert.equal(button(detail.foot(), 'Copy').props.copiedText, text);
+    detail.after(body); assert.equal(body.scrollTop, 0); assert.equal(body.scrollLeft, 0);
+    if (index === 1) {
+      button(detail.foot(), 'Wrap').props.onclick();
+      assert.equal(pre().props.class, 'out view'); assert.equal(pre().children[0], part); assert.equal(prefs.wrap, true);
+    }
+    if (index + 1 < pageCount) { body.scrollTop = 300; body.scrollLeft = 100; pageButton('Next page').props.onclick(); }
+  }
+  assert.equal(parts.join(''), text, 'all pages reconstruct the exact source, including its final newline');
+  assert.equal(pageButton('Next page').props.disabled, true);
+  assert.equal(focused.at(-1).selector, '[data-k="output-prev"]');
+  for (let index = pageCount - 2; index >= 0; index--) { pageButton('Previous page').props.onclick(); assert.equal(pre().children[0], parts[index]); }
+  assert.equal(pageButton('Previous page').props.disabled, true);
+  assert.equal(focused.at(-1).selector, '[data-k="output-next"]');
+  assert.ok(focused.every(entry => entry.options.preventScroll));
 });
 
 test('loading full native output retains final newline and updates its actual line count', () => {
-  const sheets = [], reads = [], context = vm.createContext({ h, MC, copyButton, icon, prefs: { wrap: true }, spin() {}, errBox() {},
-    ask: (spec, callback) => reads.push({ spec, callback }), sheet: options => { sheets.push(options); return { refresh() {} }; },
-  });
-  vm.runInContext(section('sessions.js', 'export function openOutput(', 'export function compactNow('), context);
-  context.openOutput({ name: 'read', detail: '/work/partial', state: 'completed', tool_call_id: 'tool-a', output_text: 'partial', output_lines: 1, truncated: true });
-  const detail = sheets[0];
+  const { detail, reads, pre, pageButton } = outputPanel({ output_text: 'partial', output_lines: 1, truncated: true });
   button(detail.foot(), 'Load full output').props.onclick();
   reads[0].callback({ ok: true, data: { text: 'whole\nresult\n', next_offset: 13, eof: true, total: 3 } });
-  assert.equal(nodes(detail.body()).find(n => n.tag === 'pre').children[0], 'whole\nresult\n');
+  assert.equal(pre().children[0], 'whole\nresult\n');
   assert.equal(button(detail.foot(), 'Copy').props.copiedText, 'whole\nresult\n');
   assert.match(textOf(detail.head('heading')), /3 lines/);
+  assert.equal(button(detail.foot(), 'Load full output'), undefined);
+  assert.equal(pageButton('Next page'), undefined);
+});
+
+test('Load full output rebuilds pages from page one while keeping native byte offsets and complete Copy', () => {
+  const partial = 'observed part '.repeat(4000), first = '前🙂\n'.repeat(6000), final = 'Native tail\n', complete = first + final;
+  const { detail, reads, pre, pageButton, pageLabel } = outputPanel({ output_text: partial, output_lines: 1, truncated: true });
+  pageButton('Next page').props.onclick(); assert.match(pageLabel(), /^Page 2 of /);
+  button(detail.foot(), 'Load full output').props.onclick();
+  assert.equal(reads[0].spec.offset, 0);
+  const byteOffset = new TextEncoder().encode(first).length;
+  reads[0].callback({ ok: true, data: { text: first, next_offset: byteOffset, eof: false } });
+  assert.equal(reads[1].spec.offset, byteOffset); assert.notEqual(byteOffset, first.length);
+  reads[1].callback({ ok: true, data: { text: final, next_offset: byteOffset + final.length, eof: true, total: 6002 } });
+  assert.equal(pageLabel(), 'Page 1 of 2'); assert.equal(pageButton('Previous page').props.disabled, true);
+  assert.equal(pre().children[0], complete.slice(0, 16384));
+  const shown = [pre().children[0]]; pageButton('Next page').props.onclick(); shown.push(pre().children[0]);
+  assert.equal(shown.join(''), complete);
+  assert.equal(button(detail.foot(), 'Copy').props.copiedText, complete);
+  assert.match(textOf(detail.head('heading')), /6,002 lines/);
   assert.equal(button(detail.foot(), 'Load full output'), undefined);
 });

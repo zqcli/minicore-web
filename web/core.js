@@ -316,6 +316,19 @@ function boundedPreview(text, { maxLines = 20, maxChars = 4096, tail = false } =
   }
   return { text: preview, truncated: start > 0 || end < text.length };
 }
+// Full-output pages retain only indices into the original string. The reader
+// slices one page at a time; Copy and export continue to use the original text.
+function textPageRanges(text, maxChars = 16384) {
+  if (!Number.isInteger(maxChars) || maxChars < 2) throw new RangeError('A text page must hold at least two UTF-16 units');
+  const ranges = [];
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(start + maxChars, text.length);
+    const before = text.charCodeAt(end - 1), after = text.charCodeAt(end);
+    if (end < text.length && before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+    ranges.push({ start, end }); start = end;
+  }
+  return ranges.length ? ranges : [{ start: 0, end: 0 }];
+}
 const toolOutput = b => b.output_text || '';
 const meaningfulText = text => /\S/.test(text || '');
 function toolKind(name) {
@@ -736,7 +749,7 @@ export {
   WINDOW, inline, parseMd, mdInc, backoff, basename, plural, titled, quiet, midTrunc, mergeReturned, deviceName,
   installOffer, intents, queries, fs, createStore, intent, newDraftVersion, captureTarget, syncReply, pending, disconnect,
   sendAgain, discardUnconfirmed, MAX_INTENTS, MAX_INTENT_TEXT_BYTES, unconfirmed, unreachable, fsError, errorText, stamp, relTime, sessionLayout, groupRows, PINNED_KEY, recent, finishedText, prunePins,
-  fmtElapsed, fmtTok, fmtNum, groupTools, foldTurns, findBlocks, foldText, toolInfo, toolOutput, boundedPreview, meaningfulText, parseDiff, diffStats, liveBlock, failureView, turnEnd,
+  fmtElapsed, fmtTok, fmtNum, groupTools, foldTurns, findBlocks, foldText, toolInfo, toolOutput, boundedPreview, textPageRanges, meaningfulText, parseDiff, diffStats, liveBlock, failureView, turnEnd,
   changesText, compactionText, statusLine, placeholder, allowedText, canStop, primaryKind, primaryTap, TAP_SLOP, approvalKey, approvalTitle, interactionKey, answerPending, validAnswerText, ANSWER_TEXT_BYTES, textAnswer,
   approvalOptions, approvalBody, approvalLine, changeStatus, contextView, projectionLabels, exportMd, slashMenu, parseSlash, atToken,
   insertMention, pushRecent, literal, composerKey, commandList, queueView, thinkingPreview, splitPath, within, crumbs, tilde, isDrive,

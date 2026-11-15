@@ -151,16 +151,27 @@ export function openContext() {
 }
 export function openOutput(b) {
   const f = MC.toolInfo(b);
-  const o = { text: MC.toolOutput(b), total: b.output_lines, full: !(b.output_dropped || b.truncated), loading: false, err: '', wrap: prefs.wrap, shown: -1 };
+  const text = MC.toolOutput(b);
+  const o = { text, pages: MC.textPageRanges(text), page: 0, total: b.output_lines, full: !(b.output_dropped || b.truncated), loading: false, err: '', wrap: prefs.wrap, shown: null };
+  const changePage = (next, key) => {
+    o.page = Math.max(0, Math.min(o.pages.length - 1, next)); m.refresh();
+    // At an end, keep keyboard focus in the pager when its pressed button becomes disabled.
+    const focus = o.page === 0 ? 'output-next' : o.page === o.pages.length - 1 ? 'output-prev' : key;
+    m.el.querySelector('[data-k="' + focus + '"]')?.focus({ preventScroll: true });
+  };
   const m = sheet({
-    key: 'out', cls: 'full', side: true, deps: () => [o.full, o.loading, o.err, o.wrap, o.text.length],
+    key: 'out', cls: 'full', side: true, footCls: 'out-foot', deps: () => [o.full, o.loading, o.err, o.wrap, o.text.length, o.page, o.total],
     head: hid => h('h2', { id: hid }, h('span', 'mono', f.verb + ' ' + f.target), h('span', 'sub2', MC.fmtNum(o.total) + ' lines' + (o.full ? '' : ' · partial output'))),
-    body: () => [o.err && errBox(o.err),
-      h('pre', { class: 'out view' + (o.wrap ? ' wrap' : ''), tabindex: '0' }, o.text)],
-    foot: () => [h('button', { class: 'btn sm', 'aria-pressed': String(o.wrap), onclick: () => { o.wrap = !o.wrap; m.refresh(); } }, icon('wrap', 'xs'), 'Wrap'),
-      copyButton(o.text, 'Copy', { class: 'btn sm' }),
-      !o.full && h('button', { class: 'btn sm primary', 'data-k': 'full', disabled: o.loading, onclick: () => loadFull(b, o, m) }, o.loading && spin('sm'), o.loading ? 'Loading…' : 'Load full output')],
-    after: body => { if (o.shown !== o.text.length) { o.shown = o.text.length; requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; }); } },
+    body: () => { const range = o.pages[o.page]; return [o.err && errBox(o.err),
+      h('pre', { class: 'out view' + (o.wrap ? ' wrap' : ''), tabindex: '0' }, o.text.slice(range.start, range.end))]; },
+    foot: () => [o.pages.length > 1 && h('div', { class: 'out-pages', 'aria-label': 'Output pages' },
+      h('button', { class: 'btn sm', 'data-k': 'output-prev', 'aria-label': 'Previous page', disabled: o.page === 0, onclick: () => changePage(o.page - 1, 'output-prev') }, icon('chev', 'xs flip'), 'Previous'),
+      h('span', { class: 'out-page-number', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' }, 'Page ' + (o.page + 1) + ' of ' + o.pages.length),
+      h('button', { class: 'btn sm', 'data-k': 'output-next', 'aria-label': 'Next page', disabled: o.page === o.pages.length - 1, onclick: () => changePage(o.page + 1, 'output-next') }, 'Next', icon('chev', 'xs'))),
+      h('div', 'out-actions', h('button', { class: 'btn sm', 'data-k': 'output-wrap', 'aria-pressed': String(o.wrap), onclick: () => { o.wrap = !o.wrap; m.refresh(); } }, icon('wrap', 'xs'), 'Wrap'),
+        copyButton(o.text, 'Copy', { class: 'btn sm', 'data-k': 'output-copy' }),
+        !o.full && h('button', { class: 'btn sm primary', 'data-k': 'full', disabled: o.loading, onclick: () => loadFull(b, o, m) }, o.loading && spin('sm'), o.loading ? 'Loading…' : 'Load full output'))],
+    after: body => { const shown = o.page + ':' + o.text.length; if (o.shown !== shown) { o.shown = shown; requestAnimationFrame(() => { body.scrollTop = o.pages.length > 1 ? 0 : body.scrollHeight; body.scrollLeft = 0; }); } },
   });
 }
 function loadFull(b, o, m) {
@@ -173,7 +184,8 @@ function loadFull(b, o, m) {
     if (!r.data.eof && r.data.next_offset <= off) { o.loading = false; o.err = 'The Host returned no progress while reading output.'; return m.refresh(); }
     off = r.data.next_offset;
     if (!r.data.eof) return next();
-    Object.assign(o, { text: parts.join(''), total: r.data.total ?? o.total, full: true, loading: false });
+    const text = parts.join('');
+    Object.assign(o, { text, pages: MC.textPageRanges(text), page: 0, shown: null, total: r.data.total ?? o.total, full: true, loading: false });
     m.refresh();
   });
   next();

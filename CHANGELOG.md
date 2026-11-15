@@ -12,6 +12,8 @@
   and expose their actual cause in Context.
 - Keep stable short Session IDs visible and bound tool/error preview text while
   retaining explicit access to complete results.
+- Page large full tool output without altering its text, and keep Copy/export
+  complete so a huge wrapped line cannot block the reading panel's layout.
 - Keep Context panels bound to their original target, refresh open menu state and
   protect global keyboard shortcuts during IME composition.
 - Preserve browser-specific send/steer/follow-up keys, native editing, reasoning
