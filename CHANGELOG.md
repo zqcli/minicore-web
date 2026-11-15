@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.1 — 2026-11-16
+
+- Validate against fixed MiniCore Host 0.12.5 / SPEC 4.11.4; update deployment
+  guidance and real-Host fixtures to `--config-dir` with separate storage.
+- Preserve historical failure reasons, native upstream diagnostics and full
+  copies/exports; add browser-native last-error recall with original targets.
+- Coordinate Session catalog reads, retain refresh demand and preserve newer
+  observed state across late summaries, rename and deletion.
+- Report asynchronous manual compaction failures once for their original Session
+  and expose their actual cause in Context.
+- Keep stable short Session IDs visible and bound tool/error preview text while
+  retaining explicit access to complete results.
+- Keep Context panels bound to their original target, refresh open menu state and
+  protect global keyboard shortcuts during IME composition.
+- Preserve browser-specific send/steer/follow-up keys, native editing, reasoning
+  line boundaries, incremental rendering and desktop/mobile interactions.
+
 ## 0.1.0 — 2026-11-14
 
 - Extract the original minicore-tui 0.9.9 webpage into an independent static application;

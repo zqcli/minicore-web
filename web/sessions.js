@@ -1,14 +1,14 @@
 import * as MC from './core.js';
-import { HOST, S, ask, fsCall, hostNow, intent, isHalted, isMain, online, operating, recoverObservations, signOut, stampAt, turnStatus, tz, viewed } from './net.js';
-import { $, actions, announce, appendDirectoryPage, apple, closeAll, copyButton, copyText, diffView, errBox, fill, findSheet, h, hover, icon, installApp, installable, layout, loading, menuRow, notify, part, popModal, prefs, pushModal, refreshSheets, rowText, set, setPref, share, sheet, spin, standalone, toast, wide } from './ui.js';
+import { HOST, S, ask, fsCall, hostNow, intent, isHalted, isMain, online, operating, recoverObservations, sessionStatus, signOut, stampAt, targetSession, turnStatus, tz, viewed } from './net.js';
+import { $, actions, announce, appendDirectoryPage, apple, closeAll, copyButton, copyText, diffView, errBox, fill, findSheet, h, hover, icon, installApp, installable, lastError, layout, loading, menuRow, notify, openLastError, part, popModal, prefs, pushModal, refreshSheets, rowText, set, setPref, share, sheet, showError, spin, standalone, toast, wide } from './ui.js';
 
 // ---- sheets ----
 function confirmSheet(o) {
   const m = sheet({
-    key: 'confirm', cls: 'dialog', title: o.title, deps: () => [o.busy, o.err, operating()],
+    key: 'confirm', cls: 'dialog', title: o.title, deps: () => [o.busy, o.err, operating(), o.disabled?.()],
     body: () => [o.text && h('p', 'hint big', o.text), o.err && errBox(o.err, 'mt12')],
     foot: () => [h('button', { class: 'btn', 'data-k': 'no', onclick: () => m.close() }, 'Cancel'),
-      h('button', { class: 'btn ' + (o.danger ? 'dangerfill' : 'primary'), 'data-k': 'ok', disabled: o.busy || (o.needsOnline && !operating()), onclick: () => o.ok(m) }, o.busy && spin(), o.label)],
+      h('button', { class: 'btn ' + (o.danger ? 'dangerfill' : 'primary'), 'data-k': 'ok', disabled: o.busy || o.disabled?.() || (o.needsOnline && !operating()), onclick: () => o.ok(m) }, o.busy && spin(), o.label)],
   });
   return m;
 }
@@ -28,7 +28,7 @@ const approvalModes = [['Ask', 'ask'], ['Automatic', 'auto'], ['Read only', 'rea
 export function openSettings() {
   sheet({
     key: 'settings', cls: 'full', title: 'Settings',
-    deps: () => [prefs, S.state.host, S.state.can_operate, online(), installable(), typeof Notification === 'undefined' ? 'none' : Notification.permission],
+    deps: () => [prefs, S.state.host, S.state.can_operate, !!lastError(), online(), installable(), typeof Notification === 'undefined' ? 'none' : Notification.permission],
     body: () => {
       const s = S.state, inst = MC.installOffer(standalone(), installable(), MC.deviceName(navigator.userAgent, navigator.maxTouchPoints), localStorage.getItem('minicore.installHint'));
       const canNotify = typeof Notification !== 'undefined' && 'serviceWorker' in navigator && isSecureContext;
@@ -46,10 +46,11 @@ export function openSettings() {
         h('h3', 'sec2', 'Host connection'), h('div', 'list',
           h('div', 'row flat', icon('term', 'ri'), rowText(online() ? 'Connected' : 'Disconnected', operating() ? 'This connection can operate' : 'Read-only connection')),
           s.host?.host_id && h('div', 'row flat', rowText('Host id'), h('span', 'val mono', s.host.host_id)),
-          s.host?.host_incarnation && h('div', 'row flat', rowText('Host incarnation'), h('span', 'val mono', s.host.host_incarnation))),
+          s.host?.host_incarnation && h('div', 'row flat', rowText('Host incarnation'), h('span', 'val mono', s.host.host_incarnation)),
+          h('button', { class: 'row flat', disabled: !lastError(), onclick: openLastError }, icon('warn', 'ri'), rowText('Last error', 'View the most recent error in this tab'))),
         h('h3', 'sec2', 'About'), h('div', 'list',
           h('div', 'row flat', rowText('Host'), h('span', 'val', HOST)),
-          h('div', 'row flat', rowText('MiniCore Web'), h('span', 'val', '0.1.0')),
+          h('div', 'row flat', rowText('MiniCore Web'), h('span', 'val', '0.1.1')),
           inst === 'prompt' && h('button', { class: 'row flat', onclick: installApp }, icon('down', 'ri'), rowText('Install app', 'Open MiniCore from your home screen')),
           inst === 'ios' && h('div', 'row flat', icon('share', 'ri'), rowText('Install app', 'Share → Add to Home Screen'),
             h('button', { class: 'ib s', 'aria-label': 'Dismiss', onclick: () => { localStorage.setItem('minicore.installHint', '1'); refreshSheets(); } }, icon('x', 'sm')))),
@@ -117,31 +118,43 @@ function pull(m, fn) {
 }
 export function openContext() {
   const target = sessionTarget();
-  const c = { d: null, err: '' };
-  const load = () => ask({ ...MC.queries.context(), target }, r => { if (r.ok) c.d = r.data; else c.err = MC.errorText(r.error); m.refresh(); });
+  const c = { d: null, err: '', loading: false };
+  const revision = () => { const state = targetSession(target)?.state; return JSON.stringify([online(), state?.controller_revision, state?.load_id, state?.runner_revision]); };
+  let observed = revision(), again = false;
+  const load = () => {
+    if (c.loading) { again = true; return; }
+    c.loading = true; c.err = '';
+    ask({ ...MC.queries.context(), target }, r => {
+      c.loading = false;
+      if (r.ok) c.d = r.data; else c.err = MC.errorText(r.error);
+      if (again) { again = false; load(); }
+      m.refresh();
+    });
+  };
   const m = sheet({
-    key: 'context', side: true, title: 'Context', deps: () => [c, turnStatus().busy, turnStatus().compacting, online()],
+    key: 'context', side: true, title: 'Context', deps: () => [c, sessionStatus(target), revision(), operating()],
     body: () => {
       if (c.err) return errBox(c.err);
       if (!c.d) return loading('Loading…');
       const x = MC.contextView(c.d);
-      return [h('div', 'cbar', x.percent != null && h('b', '', Math.round(x.percent) + '%'), h('span', '', x.used)),
+      return [h('p', 'hint', 'Session ' + target.session_id), h('div', 'cbar', x.percent != null && h('b', '', Math.round(x.percent) + '%'), h('span', '', x.used)),
         x.percent != null && h('div', { class: 'meter', role: 'meter', 'aria-valuenow': String(Math.round(x.percent)), 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': 'Context used' },
           h('i', { style: 'width:' + x.percent + '%' + (x.percent >= 80 ? ';background:var(--wac)' : '') }), x.trigger != null && h('em', { style: 'left:' + x.trigger + '%', title: 'Compacts here' }), x.target != null && h('em', { class: 't', style: 'left:' + x.target + '%', title: 'Compacts down to here' })),
         h('dl', 'kv mt16', x.rows.map(([k, val]) => [h('dt', '', k), h('dd', '', val)])),
         x.failure && errBox(x.failure, 'mt12', false)];
     },
-    foot: () => h('button', { class: 'btn block', disabled: !operating() || turnStatus().busy || turnStatus().compacting, onclick: () => compactNow(() => { c.d = null; load(); m.refresh(); }, target) },
-      turnStatus().compacting ? [spin(), 'Compacting…'] : [icon('layers', 'sm'), 'Compact now']),
+    foot: () => { const status = sessionStatus(target); return h('button', { class: 'btn block', disabled: !operating() || !status.available || status.busy || status.compacting, onclick: () => compactNow(() => { c.d = null; load(); m.refresh(); }, target) },
+      status.compacting ? [spin(), 'Compacting…'] : [icon('layers', 'sm'), 'Compact now']); },
+    after: () => { const next = revision(); if (next !== observed) { observed = next; if (online() && targetSession(target)) load(); } },
   });
   load();
 }
 export function openOutput(b) {
-  const f = MC.toolInfo(b), out = b.output, total = b.output_lines != null ? b.output_lines : out.length + b.output_dropped;
-  const o = { text: out.join('\n'), full: !(b.output_dropped || b.truncated), loading: false, err: '', wrap: prefs.wrap, shown: -1 };
+  const f = MC.toolInfo(b);
+  const o = { text: MC.toolOutput(b), total: b.output_lines, full: !(b.output_dropped || b.truncated), loading: false, err: '', wrap: prefs.wrap, shown: -1 };
   const m = sheet({
     key: 'out', cls: 'full', side: true, deps: () => [o.full, o.loading, o.err, o.wrap, o.text.length],
-    head: hid => h('h2', { id: hid }, h('span', 'mono', f.verb + ' ' + f.target), h('span', 'sub2', MC.fmtNum(total) + ' lines' + (o.full ? '' : ' · showing the last ' + MC.fmtNum(out.length)))),
+    head: hid => h('h2', { id: hid }, h('span', 'mono', f.verb + ' ' + f.target), h('span', 'sub2', MC.fmtNum(o.total) + ' lines' + (o.full ? '' : ' · partial output'))),
     body: () => [o.err && errBox(o.err),
       h('pre', { class: 'out view' + (o.wrap ? ' wrap' : ''), tabindex: '0' }, o.text)],
     foot: () => [h('button', { class: 'btn sm', 'aria-pressed': String(o.wrap), onclick: () => { o.wrap = !o.wrap; m.refresh(); } }, icon('wrap', 'xs'), 'Wrap'),
@@ -160,14 +173,15 @@ function loadFull(b, o, m) {
     if (!r.data.eof && r.data.next_offset <= off) { o.loading = false; o.err = 'The Host returned no progress while reading output.'; return m.refresh(); }
     off = r.data.next_offset;
     if (!r.data.eof) return next();
-    Object.assign(o, { text: parts.join('').replace(/\n$/, ''), full: true, loading: false });
+    Object.assign(o, { text: parts.join(''), total: r.data.total ?? o.total, full: true, loading: false });
     m.refresh();
   });
   next();
 }
 export function compactNow(done, target = sessionTarget()) {
   confirmSheet({ title: 'Compact the context now?', text: 'MiniCore summarises earlier turns to free context. The transcript stays as it is.', label: 'Compact', needsOnline: true,
-    ok: m => { m.close(true); intent({ ...MC.intents.compact(), target }, a => { if (!a.ok) toast(MC.errorText(a.error), 'error'); else if (done) done(); }); } });
+    disabled: () => { const status = sessionStatus(target); return !status.available || status.busy || status.compacting; },
+    ok: m => { m.close(true); intent({ ...MC.intents.compact(), target }, a => { if (!a.ok) showError(a.errorRecord); else if (done) done(); }); } });
 }
 export function exportSession() { share(S.state.session.title || 'MiniCore session', MC.exportMd(S.state, S.blocks)); }
 const KEYS = [['Esc', 'Close the top sheet or stop the turn'], ['Enter', 'Send, or steer a running turn (“Enter sends”)'], ['⌘/Ctrl Enter', 'Send, or steer a running turn'], ['⌥/Alt Enter', 'Queue a follow-up while a turn runs'], ['↑ ↓', 'Recent prompts in an empty composer'],
@@ -215,6 +229,7 @@ function reviewInitialAgent(initial) {
         kv('Role', config.role.name), config.role.description && kv('Description', config.role.description),
         kv('Tools', defaults.tools.map(tool => tool.name).join(', ') || 'None'), kv('Approval policy', approvalModes.find(([, mode]) => mode === defaults.execution.approval)?.[0] || defaults.execution.approval)),
       h('h3', 'sec2', 'Role instructions'), config.role.instructions ? h('pre', 'cmdbox', config.role.instructions) : h('p', 'hint', 'No additional role instructions are configured.'),
+      config.instructions && [h('h3', 'sec2', 'Agent instructions'), h('pre', 'cmdbox', config.instructions)],
       h('p', 'hint mt16', 'These values come from initial_agent in the public frontend configuration.')]
   });
 }
@@ -307,7 +322,7 @@ export function renderNav() {
   const lay = MC.sessionLayout(s.sessions, query, frozen, pins), searching = query.trim() !== '', now = hostNow();
   if (nav.classList.contains('on') || navLook || nav.contains(document.activeElement)) frozen = lay.order;
   // Only a workspace group marks recent sessions, and not the open one: the others already stand out and that one is in front.
-  const row = recent => x => [x.id, x.title, x.workspace, x.current, x.live && x.status, x.unseen, MC.relTime(Date.parse(x.updated_at), now, tz()), failed.has(x.id), recent && !x.current && MC.recent(x, now)];
+  const row = recent => x => [x.id, x.title, x.workspace, x.current, x.live && x.status, x.unseen, MC.relTime(Date.parse(x.updated_at), now, tz()), failed.has(x.id), recent && !x.current && MC.recent(x, now), x.agent_id];
   listPart({
     groups: lay.groups.map(g => {
       const v = MC.groupRows(g.items, g.level < 3 || searching || moreWs.has(g.ws));
@@ -329,17 +344,17 @@ function renderList(l) {
     !g.closed && g.hidden > 0 && h('button', { class: 'gmore', 'data-k': 'x' + encodeURIComponent(g.ws) }, 'Show ' + g.hidden + ' more')]);
 }
 // Rows of Needs you and Running show no time; the ones in Pinned have no folder header, so theirs is in the tooltip.
-function sessionRow([id, title, ws, current, status, unseen, rel, bad, recent], pinned, inPins) {
+function sessionRow([id, title, ws, current, status, unseen, rel, bad, recent, agent], pinned, inPins) {
   const shape = status === 'approval' ? h('span', { class: 'sst warn', title: 'Needs you' }, icon('hand', 'sm'))
     : status === 'running' || status === 'compacting' ? h('span', 'sst', spin('sm'))
     : bad ? h('span', { class: 'sst er', title: 'Last turn failed' }, icon('alert', 'sm'))
     : unseen ? h('span', { class: 'sst', title: 'New result' }, h('i', 'ndot'))
     : recent ? h('span', { class: 'sst', title: MC.finishedText(rel) }, h('i', 'rdot')) : h('span', 'sst');
   return h('div', 'srow' + (current ? ' cur' : ''), h('button', {
-    class: 'sopen', 'data-k': 's' + id, 'aria-current': current ? 'page' : null, title: inPins ? MC.tilde(ws) : null,
-    'aria-label': MC.titled(title) + ', ' + MC.basename(ws) + (status === 'approval' ? ', needs you' : status === 'running' ? ', running' : recent ? ', ' + MC.finishedText(rel) : ''),
-  }, pendingRow === id ? h('span', 'sst', spin('sm')) : shape, rowText(MC.titled(title)), h('span', 'stime' + (pinned ? ' workspace' : '') + (recent ? ' recent' : ''), rel)),
-  h('button', { class: 'ib more', 'data-k': 'm' + id, 'aria-label': 'Actions for ' + MC.titled(title), 'aria-haspopup': 'dialog' }, icon('more')));
+    class: 'sopen', 'data-k': 's' + id, 'aria-current': current ? 'page' : null, title: MC.titled(title) + (inPins ? '\n' + MC.tilde(ws) : ''),
+    'aria-label': MC.titled(title) + ', Session ' + id + (agent ? ', Agent ' + agent : '') + ', ' + MC.basename(ws) + (status === 'approval' ? ', needs you' : status === 'running' ? ', running' : recent ? ', ' + MC.finishedText(rel) : ''),
+  }, pendingRow === id ? h('span', 'sst', spin('sm')) : shape, rowText(MC.titled(title)), h('span', { class: 'sid', title: id, 'aria-hidden': 'true' }, id.slice(0, 8)), h('span', 'stime' + (pinned ? ' workspace' : '') + (recent ? ' recent' : ''), rel)),
+  h('button', { class: 'ib more', 'data-k': 'm' + id, 'aria-label': 'Actions for ' + MC.titled(title) + ', Session ' + id, 'aria-haspopup': 'dialog' }, icon('more')));
 }
 (() => {
   let x0 = null;
@@ -352,15 +367,16 @@ wide.addEventListener('change', () => { if (wide.matches) closeNav(); layout(); 
 function sessionActions(id) {
   const x = S.state.sessions.find(y => y.id === id);
   if (!x) return;
-  const current = x.current;
+  const target = sessionTarget(x);
   sheet({
     key: 'actions', cls: 'dialog', title: MC.titled(x.title), sub: MC.tilde(x.workspace),
+    deps: () => [online(), operating(), sessionStatus(target), targetSession(target)?.current],
     body: m => h('div', 'list',
-      !current && menuRow(m, 'open', 'Open', () => openLive(id), { focus: true }),
+      !targetSession(target)?.current && menuRow(m, 'open', 'Open', () => openLive(id), { focus: true, disabled: !online() || !targetSession(target) }),
       pinRow(m, id),
-      menuRow(m, 'edit', 'Rename', () => rename(id), { focus: current, disabled: !operating() }),
+      menuRow(m, 'edit', 'Rename', () => rename(id), { focus: targetSession(target)?.current, disabled: !operating() || !targetSession(target) }),
       menuRow(m, 'copy', 'Copy session id', () => copyText(id)),
-      menuRow(m, 'trash', 'Delete session', () => remove(id), { cls: 'bad', disabled: !operating() })),
+      menuRow(m, 'trash', 'Delete session', () => remove(id), { cls: 'bad', disabled: !operating() || !targetSession(target) })),
   });
 }
 export function rename(id) {
@@ -402,13 +418,15 @@ function remove(id) {
 export function openSessionMenu() {
   const s = S.state.session;
   if (!s) return;
+  const target = sessionTarget(s);
   sheet({
     key: 'menu', cls: 'dialog', title: MC.titled(s.title), sub: MC.tilde(s.workspace),
+    deps: () => [online(), operating(), sessionStatus(target)],
     body: m => h('div', 'list',
-      pinRow(m, s.id), menuRow(m, 'edit', 'Rename', () => rename(s.id), { disabled: !operating() }), menuRow(m, 'diff', 'Changes', openChanges), menuRow(m, 'gauge', 'Context', openContext),
-      menuRow(m, 'layers', 'Compact now', () => compactNow(), { disabled: !operating() || turnStatus().busy || turnStatus().compacting }), menuRow(m, 'search', 'Find in session', () => actions.find()), menuRow(m, 'info', 'Session info', openInfo),
+      pinRow(m, s.id), menuRow(m, 'edit', 'Rename', () => rename(s.id), { disabled: !operating() || !targetSession(target) }), menuRow(m, 'diff', 'Changes', openChanges, { disabled: !online() || !targetSession(target) }), menuRow(m, 'gauge', 'Context', openContext, { disabled: !online() || !targetSession(target) }),
+      menuRow(m, 'layers', 'Compact now', () => compactNow(null, target), { disabled: !operating() || !sessionStatus(target).available || sessionStatus(target).busy || sessionStatus(target).compacting }), menuRow(m, 'search', 'Find in session', () => actions.find()), menuRow(m, 'info', 'Session info', openInfo),
       menuRow(m, 'copy', 'Copy session id', () => copyText(s.id)), menuRow(m, 'share', 'Share or export', exportSession, { sub: 'Currently loaded transcript' }),
-      menuRow(m, 'trash', 'Delete session', () => remove(s.id), { cls: 'bad', disabled: !operating() })),
+      menuRow(m, 'trash', 'Delete session', () => remove(s.id), { cls: 'bad', disabled: !operating() || !targetSession(target) })),
   });
 }
 export function openInfo() {
@@ -562,6 +580,7 @@ export function sessionEvent(e) {
 export function onNotice(n) {
   const ev = MC.noticeEvent(n.text), seen = () => ev && Date.now() - (recentAttn.get(ev.label) || 0) < 5000;
   if (ev && ev.kind === 'failed') { const x = S.state.sessions.find(y => y.title === ev.label && !y.current); if (x) markFailed(x.id); }
+  if (n.level === 'error') return showError(n);
   if (!ev) return toast(n.text, n.level);
   // The state carrying the same event can arrive just after its notice.
   if (!seen()) setTimeout(() => { if (!seen()) toast(n.text, n.level); }, 1500);

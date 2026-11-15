@@ -1,7 +1,7 @@
 import * as MC from './core.js';
 import { HOST, S, ask, discard, hostNow, intent, newDraftVersion, online, operating, pendingKind, repaint, resend, sending, stampAt, turnStatus, tz, viewed } from './net.js';
 import { compactNow, exportSession, openApprovals, openChanges, openContext, openHelp, openInfo, openModel, openAgent, openNav, openNew, openOutput, openSettings, rename } from './sessions.js';
-import { $, actions, announce, apple, copyButton, copyText, diffView, findSheet, h, hover, icon, inField, keepFocus, kids, loading, menuRow, notify, part, prefs, reduced, set, share, sheet, spin, toast, topModal, wide } from './ui.js';
+import { $, actions, announce, apple, copyButton, copyText, diffView, findSheet, h, hover, icon, inField, keepFocus, kids, loading, menuRow, notify, part, prefs, reduced, set, share, sheet, showError, spin, toast, topModal, wide } from './ui.js';
 
 // ---- composer ----
 // "Enter sends" is stored once chosen; until then the pointer default follows the device.
@@ -254,7 +254,7 @@ function updateMenu() {
   filesT = setTimeout(() => ask(MC.queries.files(tok.query), r => {
     if (!menu || menu.kind !== 'file' || menu.tok.query !== tok.query) return;
     setMenu({ ...menu, items: r.ok ? r.data.paths : [], busy: false, sel: 0 });
-    if (!r.ok) toast(MC.errorText(r.error), 'error');
+    if (!r.ok) showError(r.errorRecord || { text: MC.errorText(r.error), fault: r.fault, target: r.target });
   }), 150);
 }
 function accept(k) {
@@ -430,17 +430,16 @@ function toolMeta(f) {
 }
 const TAIL = 20;
 function toolBody(b, f) {
-  const out = b.output, tail = out.slice(-TAIL), earlier = b.output_dropped + out.length - tail.length;
+  const text = MC.toolOutput(b), preview = MC.boundedPreview(text, { maxLines: TAIL, maxChars: 4096, tail: true });
   const input = b.input || '', files = f.kind === 'edit' && input ? MC.parseDiff(input) : [];
-  const total = b.output_lines != null ? b.output_lines : out.length + b.output_dropped;
-  const shown = tail.length > 0 || earlier > 0, pre = shown && h('pre', { class: 'out' + (prefs.wrap ? ' wrap' : ''), tabindex: '0' }, tail.join('\n'));
+  const shown = text.length > 0 || b.output_dropped > 0, pre = shown && h('pre', { class: 'out' + (prefs.wrap ? ' wrap' : ''), tabindex: '0' }, preview.text);
   return h('div', 'tb',
     f.kind === 'cmd' && h('pre', 'cmd', '$ ' + (input || b.detail)),
     files.length > 0 ? diffView(files, prefs.wrap) : f.kind === 'write' && input && h('pre', '', input.split('\n').slice(0, 400).join('\n')),
     shown && [
-      h('div', 'lbl', h('span', '', 'Output'), earlier > 0 && h('span', '', 'last ' + tail.length + ' of ' + MC.fmtNum(total) + ' lines')),
+      h('div', 'lbl', h('span', '', 'Output'), preview.truncated && h('span', '', 'Preview truncated · ' + MC.fmtNum(b.output_lines) + ' lines total')),
       pre,
-      h('div', 'tbar', wrapButton(pre), copyButton(out.join('\n')), h('button', { onclick: () => openOutput(b) }, icon('open', 'xs'), 'Open'), b.truncated && h('span', 'hint', 'Output truncated'))],
+      h('div', 'tbar', wrapButton(pre), copyButton(text), h('button', { onclick: () => openOutput(b) }, icon('open', 'xs'), 'Open'), b.truncated && h('span', 'hint', 'Output truncated'))],
     !shown && !files.length && f.kind !== 'cmd' && h('div', 'hint', f.run ? 'Running…' : 'No output'),
     !shown && f.kind === 'cmd' && !f.run && h('div', 'hint', 'No output'));
 }
@@ -478,7 +477,7 @@ function thinkText(n, text, live) {
   else el.textContent = to;
 }
 function thinkUpdate(asst, b) {
-  const k = 'r' + b.turn_id + ':' + b.response_index, thinking = asst.live && !b.text, o = isOpen(k, b), sig = b.reasoning ? k + thinking + o : '';
+  const k = 'r' + b.turn_id + ':' + b.response_index, thinking = asst.live && !MC.meaningfulText(b.text), o = isOpen(k, b), sig = MC.meaningfulText(b.reasoning) ? k + thinking + o : '';
   if (sig === asst.thinkSig) return sig && thinkText(asst.think, b.reasoning, thinking);
   asst.thinkSig = sig;
   const n = sig ? thinkNode(b, k, thinking, o) : h('div');
@@ -494,18 +493,18 @@ function asstNode(b, i) {
   n._asst = { note: part(note, noteNode), key: b.turn_id + ':' + b.response_index, live, thinkSig: '', md: { cache: null, toks: [], els: [] }, body: h('div', 'md'), think: h('div') };
   n.append(note, n._asst.think, n._asst.body);
   updateAsst(n, b);
-  if (!live && b.text) n.append(answerActs(b, i));
+  if (!live && MC.meaningfulText(b.text)) n.append(answerActs(b, i));
   return n;
 }
 function updateAsst(n, b) {
-  const asst = n._asst, m = asst.md;
+  const asst = n._asst, m = asst.md, text = MC.meaningfulText(b.text) ? b.text : '';
   asst.note(MC.projectionLabels(b));
   n.hidden = MC.quiet(b);
-  n.classList.toggle('thk', !b.text);
+  n.classList.toggle('thk', !text);
   thinkUpdate(asst, b);
-  if (m.text === b.text && m.wrap === prefs.wrap) return;
-  m.text = b.text; m.wrap = prefs.wrap;
-  const r = MC.mdInc(m.cache, b.text);
+  if (m.text === text && m.wrap === prefs.wrap) return;
+  m.text = text; m.wrap = prefs.wrap;
+  const r = MC.mdInc(m.cache, text);
   m.cache = r.cache;
   let k = 0;
   while (k < m.toks.length && k < r.blocks.length && m.toks[k] === r.blocks[k]) k++;
@@ -513,8 +512,8 @@ function updateAsst(n, b) {
   m.els.length = k; m.toks = r.blocks;
   if (asst.caret) asst.caret.remove();
   for (let j = k; j < r.blocks.length; j++) { const e = mdToNode(r.blocks[j]); asst.body.append(e); m.els.push(e); }
-  asst.body.hidden = !b.text;
-  asst.caret = asst.live && b.text ? caretInto(asst.body) : null;
+  asst.body.hidden = !text;
+  asst.caret = asst.live && text ? caretInto(asst.body) : null;
 }
 function answerActs(b, i) {
   const c = h('button', { class: 'ib', 'aria-label': 'Copy answer', onclick: () => copyText(b.text, c) }, icon('copy', 'sm'));
@@ -546,14 +545,16 @@ function turnClock(i) {
   const at = typeof b.finished_at === 'string' ? Date.parse(b.finished_at) : b.finished_at;
   return Number.isFinite(at) ? at : null;
 }
-// The failed turn's header with what the host said under it: the hint, the provider's own message clamped to three lines
-// (its toggle shows when the text overflows, see `place`) and the button that helps.
+// Collapsed errors mount only their bounded display copy. Expanding and Copy
+// retain the complete native message and the optional diagnostic fields.
 function failureNode(head, f, i) {
   const k = 'e' + i, o = isOpen(k), copy = f.message && copyButton(f.message, 'Copy', { class: 'fbtn' });
   const act = f.action && h('button', { class: 'btn sm', onclick: f.action === 'compact' ? () => compactNow() : openModel }, f.action === 'compact' ? 'Compact now' : 'Switch model');
   return h('div', 'fail', head, f.hint && h('p', 'fhint', f.hint),
-    f.message && h('blockquote', 'fmsg' + (o ? '' : ' clip'), h('div', 'fmt', f.message)),
-    (f.message || act) && h('div', 'facts', f.message && h('button', { class: 'more2', 'data-k': k, hidden: !(o || f.multiline), 'aria-expanded': String(o) }, o ? 'Show less' : 'Show full message'), copy, act));
+    f.message && h('blockquote', 'fmsg' + (o ? '' : ' clip'), h('div', 'fmt', o ? f.message : f.preview)),
+    !o && f.truncated && h('div', 'hint', 'Message preview truncated'),
+    o && f.diagnostics.length > 0 && h('dl', 'kv', f.diagnostics.map(([label, value]) => [h('dt', '', label), h('dd', '', value)])),
+    (f.message || f.diagnostics.length || act) && h('div', 'facts', (f.message || f.diagnostics.length) && h('button', { class: 'more2', 'data-k': k, hidden: !(o || f.multiline || f.diagnostics.length), 'aria-expanded': String(o) }, o ? 'Show less' : 'Show full message'), copy, act));
 }
 function blockNode(b, i) {
   switch (b.type) {
@@ -867,7 +868,7 @@ function answer(choice) {
   const a = S.state.interaction, call = reply.call;
   if (!a || MC.answerPending(S) || !operating()) return;
   intent(MC.intents.answer(a.turn_id, a.id, choice, a.load_id), ack => {
-    if (!ack.ok) return toast(MC.errorText(ack.error), 'error');
+    if (!ack.ok) return showError(ack.errorRecord || { text: MC.errorText(ack.error), fault: ack.fault, target: ack.target });
     if (call && choice === 'deny') markDenied(call);
   });
 }

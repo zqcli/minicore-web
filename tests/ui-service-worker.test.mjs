@@ -19,7 +19,7 @@ function worker() {
     clients: { claim: async () => {}, matchAll: async () => [] },
     caches: {
       open: async () => cache,
-      keys: async () => ['unrelated-app', 'minicore-29', 'minicore-web-0.0.1', 'minicore-web-0.1.0'],
+      keys: async () => ['unrelated-app', 'minicore-29', 'minicore-web-0.0.1', 'minicore-web-0.1.0', 'minicore-web-0.1.1'],
       delete: async name => deleted.push(name),
     },
     fetch: async request => { fetched.push(request); return new Response('fresh asset'); },
@@ -47,7 +47,7 @@ test('installation uses only public assets beneath the application scope and omi
 test('activation removes only obsolete caches owned by MiniCore Web', async () => {
   const w = worker();
   await w.dispatch('activate');
-  assert.deepEqual(w.deleted, ['minicore-web-0.0.1']);
+  assert.deepEqual(w.deleted, ['minicore-web-0.0.1', 'minicore-web-0.1.0']);
 });
 
 test('nonassets, authorization, query strings, other origins and mutations bypass the cache handler', async () => {

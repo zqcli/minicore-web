@@ -1,11 +1,22 @@
 import * as MC from './core.js';
 import { HostError, newId, sourceKey } from './host.js';
-import { SessionObservation, sessionTarget, sessionView, statusView, interactionView, faultText } from './host-state.js';
+import { SessionObservation, sessionKey, sessionTarget, sessionView, statusView, interactionView, faultText, mergeSessionState } from './host-state.js';
 
 const clone = value => value == null ? value : structuredClone(value);
 const categories = ['state', 'output', 'completion', 'message', 'interaction'];
 const rejected = message => new HostError('business', message);
 const EMPTY_STATUS = { busy: false, compacting: false, label: 'Ready', started_ms: null };
+const metadataFields = ['title', 'config_revision', 'config', 'workspace', 'model', 'reasoning', 'execution', 'role', 'agent_config_revision'];
+const deleted = state => ['deleted', 'reclaimed'].includes(state?.deletion?.data?.status);
+const nativeTarget = value => Object.fromEntries(['host_id', 'host_incarnation', 'agent_id', 'session_id', 'turn_id', 'load_id', 'response_index', 'tool_call_id'].filter(key => value?.[key] != null).map(key => [key, value[key]]));
+function sessionProjection(info, state, agent, previous) {
+  const view = sessionView(info, state, agent);
+  if (previous?.config_revision > view.config_revision) for (const key of metadataFields) {
+    if (Object.hasOwn(previous, key)) view[key] = previous[key];
+    else delete view[key];
+  }
+  return { ...view, ...state, state: state || null, status: state ? statusView(state).kind : view.status, live: state ? state.lifecycle !== 'closed' : view.live };
+}
 
 // Application commands address captured native owners. This is presentation state,
 // not a replicated scheduler; execution is observed only through Host facts.
@@ -13,6 +24,7 @@ export class HostApplication {
   constructor(store, emit = () => {}) {
     this.S = store; this.emit = emit; this.client = null; this.config = null; this.observation = null;
     this.stream = null; this.hostStream = null; this.navigation = 0; this.work = new Map(); this.changes = new Map();
+    this.catalog = null; this.sessionStates = new Map(); this.compactionFailures = new Set();
   }
   notify(fx = {}, event = null) { MC.syncReply(this.S); this.emit(event, { state: true, ...fx }); }
   get online() { return !!this.client?.online; }
@@ -23,9 +35,11 @@ export class HostApplication {
     return sessionTarget(target);
   }
   async initialize(client, config) {
-    this.client = client; this.config = config; this.work.clear();
+    if (!this.client || this.client.info?.host_id !== client.info.host_id || this.client.info?.host_incarnation !== client.info.host_incarnation) this.compactionFailures.clear();
+    this.client = client; this.config = config; this.work.clear(); this.catalog = null; this.sessionStates.clear();
+    this.observation = null;
     const previous = this.S.state?.session;
-    const [host, agents, models, tools] = await Promise.all([client.call('host.info'), client.call('agent.list', {}), client.call('model.list'), client.call('tool.list')]);
+    const [host, agents, models, tools] = await Promise.all([client.call('host.info'), this.refreshAgents(client, false), client.call('model.list'), client.call('tool.list')]);
     if (this.client !== client) return;
     const selected = [this.S.state?.selected_agent_id, previous?.agent_id, agents.items[0]?.id].find(id => agents.items.some(agent => agent.id === id));
     this.S.version = host.version;
@@ -35,11 +49,12 @@ export class HostApplication {
       sessions: [], session: null, draft: { agent_id: selected, workspace: '', model: '', reasoning: 'auto', overrides: {} },
       status: { ...EMPTY_STATUS }, queue: [], interaction: null, background: { approval: 0, running: 0 }, observation_error: null };
     this.installAgents(agents.items);
-    this.hostStream = await client.subscribe({ scope: { kind: 'host', host_id: host.host_id }, categories: ['state'] }, {
+    const hostStream = await client.subscribe({ scope: { kind: 'host', host_id: host.host_id }, categories: ['state'] }, {
       onBaseline: baseline => { if (this.client === client) for (const event of baseline.initial_states) this.hostEvent(event); },
-      onEvent: event => { if (this.client === client) this.hostEvent(event); }, onResync: fault => { if (this.client !== client) return; this.S.state.observation_error = faultText(fault); this.notify({ notice: { level: 'error', text: 'Host observation needs recovery: ' + faultText(fault) } }); },
+      onEvent: event => { if (this.client === client) this.hostEvent(event); }, onResync: fault => { if (this.client !== client) return; this.S.state.observation_error = faultText(fault); this.notify({ notice: { level: 'error', text: 'Host observation needs recovery: ' + faultText(fault), target: nativeTarget(host), fault } }); },
     });
-    if (this.client !== client) return;
+    if (this.client !== client) { await hostStream.close(); return; }
+    this.hostStream = hostStream;
     if (selected) await this.selectAgent(selected, false, client);
     if (this.client !== client) return;
     const existing = previous && this.S.state.sessions.find(s => s.id === previous.id && s.agent_id === previous.agent_id);
@@ -48,10 +63,15 @@ export class HostApplication {
     else { this.S.sid = null; this.S.blocks = []; this.notify({ snapshot: true, newSession: true }); }
   }
   installAgents(agents) {
-    const state = this.S.state, previous = new Map(state.sessions.map(s => [s.agent_id + ':' + s.id, s]));
+    const state = this.S.state, previous = new Map(state.sessions.map(s => [sessionKey({ ...state.host, ...s, session_id: s.id }), s]));
     state.agents = agents;
-    state.sessions = agents.flatMap(agent => agent.sessions.map(info => ({ ...sessionView(info, null, agent), host_id: state.host.host_id, host_incarnation: state.host.host_incarnation,
-      metadata_saving: previous.get(info.agent_id + ':' + info.id)?.metadata_saving, current: state.session?.id === info.id && state.session?.agent_id === info.agent_id, unseen: previous.get(info.agent_id + ':' + info.id)?.unseen || false })));
+    state.sessions = agents.flatMap(agent => agent.sessions.flatMap(info => {
+      const identity = { host_id: state.host.host_id, host_incarnation: state.host.host_incarnation, agent_id: info.agent_id, session_id: info.id };
+      const key = sessionKey(identity), observed = this.sessionStates.get(key), old = previous.get(key);
+      if (deleted(observed)) return [];
+      return [{ ...sessionProjection(info, observed, agent, old), ...identity,
+        current: state.session?.id === info.id && state.session?.agent_id === info.agent_id, unseen: old?.unseen || false }];
+    }));
     this.background();
     if (state.session && !state.sessions.some(row => row.id === state.session.id && row.agent_id === state.session.agent_id)) this.newDraft(state.session.workspace, state.selected_agent_id);
   }
@@ -59,7 +79,42 @@ export class HostApplication {
     const rows = this.S.state.sessions.filter(s => !s.current);
     this.S.state.background = { approval: rows.filter(s => s.status === 'approval').length, running: rows.filter(s => s.status === 'running').length };
   }
-  async refreshAgents(client = this.client) { const result = await client.call('agent.list', {}); if (this.client === client) { this.installAgents(result.items); this.notify(); } return result; }
+  refreshAgents(client = this.client, install = true) {
+    if (this.client !== client) return Promise.resolve();
+    if (this.catalog?.client === client) { this.catalog.again = true; return this.catalog.promise; }
+    const read = this.catalog = { client, again: false };
+    read.promise = Promise.resolve().then(async () => {
+      try {
+        let result;
+        do {
+          read.again = false;
+          try { result = await client.call('agent.list', {}); }
+          catch (error) { if (read.again && this.client === client && client.online) continue; throw error; }
+          if (this.client !== client || this.catalog !== read) return result;
+          // A demand received during this read needs a later snapshot. Wait for
+          // it before replacing the catalog or changing the selected Session.
+          if (install && !read.again) { this.installAgents(result.items); this.notify(); }
+        } while (read.again && this.client === client && client.online);
+        return result;
+      } finally {
+        // Release the flight before settling its promise, so a request in the
+        // next microtask cannot attach demand to a loop that has already ended.
+        if (this.catalog === read) this.catalog = null;
+        if (this.work.get('catalog') === read.promise) this.work.delete('catalog');
+      }
+    });
+    this.work.set('catalog', read.promise); return read.promise;
+  }
+  requestCatalog() {
+    const promise = this.refreshAgents(), read = this.catalog;
+    if (read && !read.observing) {
+      read.observing = true;
+      promise.catch(error => {
+        if (this.client === read.client && this.online) this.notify({ notice: { level: 'error', text: error.message, target: nativeTarget(read.client.info), operation: { kind: 'agent.list' }, fault: error.fault } });
+      });
+    }
+    return promise;
+  }
   async agentDetails(agent_id, client = this.client) {
     const info = await client.call('agent.get', { target: { host_id: client.info.host_id, agent_id } });
     if (this.client === client && this.S.state.selected_agent_id === agent_id) this.S.state.agent = info;
@@ -92,40 +147,57 @@ export class HostApplication {
     if (!state || event.host_id !== state.host.host_id || event.host_incarnation !== state.host.host_incarnation) return;
     if (event.kind === 'host.state') { state.host = { ...state.host, ...event.data }; this.notify({}, event); return; }
     if (event.kind !== 'session.state') return;
-    if (['deleted', 'reclaimed'].includes(event.data.deletion?.data?.status)) {
+    this.observeSessionState(event);
+    if (deleted(this.sessionStates.get(sessionKey(event)))) return;
+    if (this.observation?.matches(event)) this.event(event, true);
+    else this.notify({}, event);
+  }
+  observeSessionState(event) {
+    const state = this.S.state;
+    if (!state || event.host_id !== state.host.host_id || event.host_incarnation !== state.host.host_incarnation) return;
+    const key = sessionKey(event), previous = this.sessionStates.get(key), data = mergeSessionState(previous, event.data);
+    this.sessionStates.set(key, data);
+    if (deleted(data)) {
       state.sessions = state.sessions.filter(row => row.id !== event.session_id || row.agent_id !== event.agent_id);
       if (state.session?.id === event.session_id && state.session?.agent_id === event.agent_id) this.newDraft(state.session.workspace, state.selected_agent_id);
       else { this.background(); this.notify({}, event); }
       return;
     }
     const row = state.sessions.find(s => s.agent_id === event.agent_id && s.id === event.session_id);
-    const freshController = row?.controller_revision == null || event.data.controller_revision >= row.controller_revision;
-    const metadataCommitted = freshController && row?.metadata_saving && !event.data.metadata_saving;
-    const metadataFault = event.data.metadata_fault, deletionFault = event.data.deletion?.data?.status === 'failed' && event.data.deletion.data.error;
+    const metadataCommitted = previous?.metadata_saving && !data.metadata_saving;
+    const metadataFault = data.metadata_fault, deletionFault = data.deletion?.data?.status === 'failed' && data.deletion.data.error;
     const changedFault = (before, after) => after && JSON.stringify(before) !== JSON.stringify(after);
-    if (freshController && changedFault(row?.metadata_fault, metadataFault)) this.notify({ notice: { level: 'error', text: 'Session metadata save failed: ' + faultText(metadataFault) } }, event);
-    if (freshController && changedFault(row?.deletion?.data?.error, deletionFault)) this.notify({ notice: { level: 'error', text: 'Session deletion failed: ' + faultText(deletionFault) } }, event);
-    if (row && (row.controller_revision == null || event.data.controller_revision >= row.controller_revision)) {
+    if (changedFault(previous?.metadata_fault, metadataFault)) this.notify({ notice: { level: 'error', text: 'Session metadata save failed: ' + faultText(metadataFault), target: nativeTarget(event), operation: { kind: 'session.update' }, fault: metadataFault } }, event);
+    if (changedFault(previous?.deletion?.data?.error, deletionFault)) this.notify({ notice: { level: 'error', text: 'Session deletion failed: ' + faultText(deletionFault), target: nativeTarget(event), operation: { kind: 'session.delete', ...(data.deletion.operation_id && { operation_id: data.deletion.operation_id }) }, fault: deletionFault } }, event);
+    const compact = data.compaction, outcome = compact?.state?.phase === 'finished' && compact.state.result;
+    if (compact?.source?.kind === 'manual' && outcome?.outcome === 'failed') {
+      const operation_id = compact.source.operation_id, failureKey = JSON.stringify([key, operation_id]);
+      if (!this.compactionFailures.has(failureKey)) {
+        this.compactionFailures.add(failureKey);
+        this.notify({ notice: { level: 'error', text: 'Session compaction failed: ' + faultText(outcome.fault), target: nativeTarget(event), operation: { kind: 'session.compact', operation_id }, fault: outcome.fault } }, event);
+      }
+    }
+    if (row) {
       const before = row.status;
-      Object.assign(row, { ...event.data, status: statusView(event.data).kind, live: event.data.lifecycle !== 'closed', current: state.session?.id === row.id && state.session?.agent_id === row.agent_id });
+      Object.assign(row, { ...data, state: data, status: statusView(data).kind, live: data.lifecycle !== 'closed', current: state.session?.id === row.id && state.session?.agent_id === row.agent_id });
       if (before === 'running' && row.status === 'idle' && !row.current) row.unseen = true;
       this.background();
     }
-    if (metadataCommitted) this.once('catalog', () => this.refreshAgents());
-    if (!row) this.once('catalog', () => this.refreshAgents());
-    if (this.observation?.matches(event)) this.event(event);
-    else this.notify({}, event);
+    if (metadataCommitted || !row) this.requestCatalog();
   }
   once(key, action) {
     if (this.work.has(key)) return this.work.get(key);
-    const promise = Promise.resolve().then(action).catch(error => { if (this.online) this.notify({ notice: { level: 'error', text: error.message } }); }).finally(() => { if (this.work.get(key) === promise) this.work.delete(key); });
+    const client = this.client;
+    const promise = Promise.resolve().then(action).catch(error => { if (this.client === client && this.online) this.notify({ notice: { level: 'error', text: error.message, fault: error.fault } }); }).finally(() => { if (this.work.get(key) === promise) this.work.delete(key); });
     this.work.set(key, promise); return promise;
   }
-  event(event) {
+  event(event, observed = false) {
+    if (event.kind === 'session.state' && !observed) { this.hostEvent(event); return; }
     const obs = this.observation, wasMetadataSaving = obs?.state?.metadata_saving, previousCompaction = obs?.state?.compaction;
     if (!obs?.event(event)) return;
     this.project(event);
-    if (event.kind === 'session.state' && obs.historyReady && event.data.compaction?.state?.phase === 'finished' && previousCompaction?.state?.phase !== 'finished') this.once('history:' + obs.key, () => this.refreshHistory(obs));
+    const compaction = obs.state?.compaction;
+    if (event.kind === 'session.state' && obs.historyReady && compaction?.state?.phase === 'finished' && (previousCompaction?.state?.phase !== 'finished' || JSON.stringify(previousCompaction.source) !== JSON.stringify(compaction.source))) this.once('history:' + obs.key, () => this.refreshHistory(obs));
     if (/^(session.state|message.accepted|message.bound)$/.test(event.kind)) this.refreshQueue(obs);
     if (event.kind === 'session.state' && !event.data.metadata_saving && wasMetadataSaving) this.once('metadata:' + obs.key, () => this.refreshSession(obs));
     if (event.kind === 'toolcall.state' || event.kind === 'interaction.requested') this.once('tool:' + sourceKey(event), () => this.readTool(event, obs));
@@ -149,11 +221,14 @@ export class HostApplication {
     if (!obs) return;
     const state = this.S.state, projected = obs.render(); this.S.blocks = projected.blocks;
     if (event && /output.delta$/.test(event.kind)) { this.notify({ dirty: projected.dirty, state: false }, event); return; }
-    if (obs.info) state.session = { ...sessionView(obs.info, obs.state, state.agents.find(a => a.id === obs.identity.agent_id)), ...obs.identity, id: obs.identity.session_id, metadata_saving: obs.state?.metadata_saving, metadata_fault: obs.state?.metadata_fault, deletion: obs.state?.deletion };
+    if (obs.info) state.session = { ...sessionProjection(obs.info, obs.state, state.agents.find(a => a.id === obs.identity.agent_id), state.sessions.find(s => s.id === obs.identity.session_id && s.agent_id === obs.identity.agent_id)), ...obs.identity, id: obs.identity.session_id };
     state.status = statusView(obs.state, obs.turns.get(obs.state?.active_turn_id)); state.queue = obs.queue;
     const pending = obs.state?.pending_interactions?.[0], tool = pending && [...obs.tools.values()].find(t => t.tool_call_id === pending.tool_call_id && t.turn_id === obs.state.active_turn_id);
     state.interaction = interactionView(pending, obs.state, tool);
-    state.sessions = state.sessions.map(s => ({ ...s, current: s.id === obs.identity.session_id && s.agent_id === obs.identity.agent_id })); this.background();
+    state.sessions = state.sessions.map(s => {
+      const current = s.id === obs.identity.session_id && s.agent_id === obs.identity.agent_id;
+      return { ...s, ...(current && obs.info ? state.session : {}), current, unseen: s.unseen };
+    }); this.background();
     this.notify({ dirty: projected.dirty }, event);
   }
   async refreshHistory(obs = this.observation, client = this.client) {
@@ -167,9 +242,9 @@ export class HostApplication {
     if (!obs) return;
     const info = await client.call('session.get', { target: sessionTarget(obs.identity) });
     if (this.client !== client) return info;
-    obs.info = info;
+    if (!obs.info || info.config_revision >= obs.info.config_revision) obs.info = info;
     const row = this.S.state.sessions.find(session => session.id === info.id && session.agent_id === info.agent_id);
-    if (row) Object.assign(row, sessionView(info, obs.state, this.S.state.agents.find(agent => agent.id === info.agent_id)), { current: obs === this.observation });
+    if (row) Object.assign(row, sessionProjection(obs.info, this.sessionStates.get(obs.key) || obs.state, this.S.state.agents.find(agent => agent.id === info.agent_id), row), { current: obs === this.observation });
     if (obs === this.observation) this.project(); return obs.info;
   }
   async openSession(target) {
@@ -178,14 +253,20 @@ export class HostApplication {
     const previous = this.stream; this.stream = null; previous?.close().catch(() => {});
     const sameView = this.S.sid === ref.session_id && this.observation?.matches(identity);
     const obs = sameView ? this.observation : new SessionObservation(identity); this.observation = obs;
+    if (this.sessionStates.has(obs.key)) obs.state = mergeSessionState(obs.state, this.sessionStates.get(obs.key));
     this.S.state.session = { ...this.S.state.sessions.find(s => s.id === ref.session_id && s.agent_id === ref.agent_id), ...identity, id: ref.session_id, workspace: '', title: '' };
     this.S.state.selected_agent_id = ref.agent_id;
     this.S.state.status = { ...EMPTY_STATUS, loading: true }; this.S.sid = ref.session_id; this.S.blocks = sameView ? obs.blocks : [];
     this.notify({ newSession: !sameView, snapshot: true, dirty: [] });
     const stream = await client.subscribe({ scope: { kind: 'session', ...ref }, categories }, {
-      onBaseline: result => { obs.baseline(result); if (client === this.client && obs === this.observation) this.project(); },
+      onBaseline: result => {
+        if (client !== this.client || obs !== this.observation) return;
+        obs.baseline(result);
+        for (const event of result.initial_states) if (event.kind === 'session.state') this.observeSessionState(event);
+        if (obs === this.observation) this.project();
+      },
       onEvent: event => { if (client === this.client && obs === this.observation) this.event(event); },
-      onResync: fault => { if (client === this.client && obs === this.observation) { this.S.state.observation_error = faultText(fault); this.notify({ notice: { level: 'error', text: 'Session observation ended: ' + faultText(fault) } }); } },
+      onResync: fault => { if (client === this.client && obs === this.observation) { this.S.state.observation_error = faultText(fault); this.notify({ notice: { level: 'error', text: 'Session observation ended: ' + faultText(fault), target: nativeTarget(identity), fault } }); } },
     });
     if (client !== this.client || token !== this.navigation) { await stream.close(); return; }
     this.stream = stream;
@@ -203,12 +284,21 @@ export class HostApplication {
   }
   async recover() {
     if (!this.online) return;
+    const client = this.client;
     const s = this.S.state.session;
     if (s && (!this.stream || this.stream.ended)) await this.openSession({ ...s, session_id: s.id });
+    if (this.client !== client) return;
     if (this.hostStream?.ended) {
-      this.hostStream = await this.client.subscribe({ scope: { kind: 'host', host_id: this.S.state.host.host_id }, categories: ['state'] }, { onBaseline: b => b.initial_states.forEach(e => this.hostEvent(e)), onEvent: e => this.hostEvent(e), onResync: f => { this.S.state.observation_error = faultText(f); this.notify(); } });
-      await this.refreshAgents();
+      const stream = await client.subscribe({ scope: { kind: 'host', host_id: this.S.state.host.host_id }, categories: ['state'] }, {
+        onBaseline: b => { if (this.client === client) b.initial_states.forEach(e => this.hostEvent(e)); },
+        onEvent: e => { if (this.client === client) this.hostEvent(e); },
+        onResync: f => { if (this.client === client) { this.S.state.observation_error = faultText(f); this.notify(); } },
+      });
+      if (this.client !== client) { await stream.close(); return; }
+      this.hostStream = stream;
+      await this.refreshAgents(client);
     }
+    if (this.client !== client) return;
     this.S.state.observation_error = null; this.notify();
   }
   async readTool(source, obs) {
@@ -262,11 +352,12 @@ export class HostApplication {
     if (kind === 'set_model' || kind === 'set_reasoning') {
       const patch = kind === 'set_model' ? { model: spec.model } : { reasoning: spec.level };
       if (!target.session_id) { Object.assign(state.draft, patch); Object.assign(state.draft.overrides, patch); this.notify(); return {}; }
-      return this.updateSession(target, { config: patch }, operation.config_revision, client);
+      return this.updateSession(target, { config: patch }, operation.config_revision, client, operation);
     }
     if (kind === 'create_agent' || kind === 'new_session' && spec.bootstrap) {
       if (!this.operating) throw rejected('This connection is read-only');
       const request = { ...clone(spec.bootstrap), operation_id: newId() };
+      operation.operation = { kind: 'agent.create', operation_id: request.operation_id };
       if (spec.workspace) request.config.session_defaults.workspace = { path: spec.workspace };
       if (spec.workspace !== undefined) request.default_session = { ...request.default_session, overrides: { ...request.default_session?.overrides, workspace: spec.workspace ? { path: spec.workspace } : null } };
       const receipt = operation.receipt = await client.call('agent.create', request);
@@ -275,11 +366,15 @@ export class HostApplication {
     if (kind === 'submit' || kind === 'queue') {
       const message = { message_id: newId(), mode: kind === 'queue' ? 'follow_up' : 'steer', text: this.expand(spec.text) };
       let receipt;
-      if (target.session_id) receipt = await client.call('message.send', { ...message, target: { kind: 'session', ...this.requireTarget(target) } });
+      if (target.session_id) {
+        operation.operation = { kind: 'message.send', message_id: message.message_id };
+        receipt = await client.call('message.send', { ...message, target: { kind: 'session', ...this.requireTarget(target) } });
+      }
       else {
         if (!target.agent_id) throw rejected('Create or select an Agent first');
         this.checkHost(target);
-        receipt = operation.receipt = await client.call('session.create', { operation_id: newId(), target: { host_id: state.host.host_id, agent_id: target.agent_id }, overrides: clone(operation.draftConfig.overrides || {}), initial_message: message });
+        operation.operation = { kind: 'session.create', operation_id: newId(), message_id: message.message_id };
+        receipt = operation.receipt = await client.call('session.create', { operation_id: operation.operation.operation_id, target: { host_id: state.host.host_id, agent_id: target.agent_id }, overrides: clone(operation.draftConfig.overrides || {}), initial_message: message });
         await this.afterCreate(receipt, operation, client);
       }
       return { receipt, acceptance: receipt.result.delivery === 'accepted' ? 'accepted' : 'rejected', input_id: receipt.message_id, start_error: receipt.result.start_error };
@@ -287,16 +382,19 @@ export class HostApplication {
     if (kind === 'update_agent') {
       this.checkHost(target);
       const detail = target.agent_id === state.agent?.id ? state.agent : await this.agentDetails(target.agent_id, client);
-      const receipt = await client.call('agent.update', { target: { host_id: state.host.host_id, agent_id: target.agent_id }, operation_id: newId(), expected_config_revision: spec.expected_config_revision ?? operation.config_revision ?? detail.config_revision, changes: spec.changes });
-      await this.observeAfter(async () => { await this.agentDetails(target.agent_id, client); await this.refreshAgents(client); }, client); return { receipt };
+      operation.operation = { kind: 'agent.update', operation_id: newId() };
+      const receipt = await client.call('agent.update', { target: { host_id: state.host.host_id, agent_id: target.agent_id }, operation_id: operation.operation.operation_id, expected_config_revision: spec.expected_config_revision ?? operation.config_revision ?? detail.config_revision, changes: spec.changes });
+      await this.observeAfter(async () => { await this.agentDetails(target.agent_id, client); await this.refreshAgents(client); }, client, { target: nativeTarget(receipt), operation: operation.operation }); return { receipt };
     }
-    if (kind === 'rename_session' || kind === 'update_session') return this.updateSession(target, kind === 'rename_session' ? { title: spec.title || null } : spec.changes, spec.expected_config_revision ?? operation.config_revision, client);
+    if (kind === 'rename_session' || kind === 'update_session') return this.updateSession(target, kind === 'rename_session' ? { title: spec.title || null } : spec.changes, spec.expected_config_revision ?? operation.config_revision, client, operation);
     const ref = this.requireTarget(target), operation_id = newId();
     if (kind === 'unqueue') {
+      operation.operation = { kind: 'input.remove', operation_id, message_id: spec.input_id };
       const receipt = await client.call('input.remove', { target: ref, operation_id, message_id: spec.input_id });
       return { receipt, input_id: spec.input_id, text: operation.queuedText };
     }
     if (kind === 'answer') {
+      operation.operation = { kind: 'interaction.answer', operation_id, interaction_id: spec.interaction_id };
       const choice = spec.choice, answer = typeof choice === 'number' ? { kind: 'tool_input', answer: { kind: 'choice', data: { index: choice } } }
         : choice && typeof choice === 'object' ? { kind: 'tool_input', answer: { kind: 'text', data: choice.text } } : { kind: 'approval', decision: choice };
       const receipt = await client.call('interaction.answer', { target: ref, request: { operation_id, turn_id: spec.turn_id, load_id: spec.load_id || target.load_id, interaction_id: spec.interaction_id, answer } });
@@ -304,20 +402,25 @@ export class HostApplication {
     }
     if (kind === 'cancel') {
       const method = spec.turn_id ? 'turn.cancel' : spec.operation_id ? 'session.compact.cancel' : 'session.cancel';
+      operation.operation = { kind: method, operation_id, ...(spec.operation_id && { target_operation_id: spec.operation_id }) };
       return { receipt: await client.call(method, { target: ref, operation_id, ...(spec.turn_id ? { turn_id: spec.turn_id, keep_inbox: true } : spec.operation_id ? { target_operation_id: spec.operation_id } : { keep_inbox: true }) }) };
     }
-    if (kind === 'compact') return { receipt: await client.call('session.compact', { target: ref, operation_id }) };
+    if (kind === 'compact') {
+      operation.operation = { kind: 'session.compact', operation_id };
+      return { receipt: await client.call('session.compact', { target: ref, operation_id }) };
+    }
     if (kind === 'delete_session') {
+      operation.operation = { kind: 'session.delete', operation_id };
       const receipt = await client.call('session.delete', { target: ref, operation_id, close: true });
-      await this.observeAfter(() => this.refreshAgents(client), client); return { receipt };
+      await this.observeAfter(() => this.refreshAgents(client), client, { target: nativeTarget(receipt), operation: operation.operation }); return { receipt };
     }
     throw rejected('Unsupported local action: ' + kind);
   }
   checkHost(target) { if (target.host_incarnation && target.host_incarnation !== this.client.info.host_incarnation || target.host_id && target.host_id !== this.client.info.host_id) throw rejected('The original Host incarnation has ended'); }
-  async observeAfter(action, client = this.client) {
+  async observeAfter(action, client = this.client, context = {}) {
     if (this.client !== client) return;
     try { await action(); }
-    catch (error) { if (this.client === client) this.notify({ notice: { level: 'error', text: 'The Host returned a receipt, but refreshing the view failed: ' + error.message } }); }
+    catch (error) { if (this.client === client) this.notify({ notice: { level: 'error', text: 'The Host returned a receipt, but refreshing the view failed: ' + error.message, ...context, fault: error.fault } }); }
   }
   async afterCreate(receipt, operation, client = this.client) {
     await this.observeAfter(async () => {
@@ -325,18 +428,20 @@ export class HostApplication {
       if (this.client !== client) return;
       if (receipt.agent_id && operation.navigation === this.navigation) await this.selectAgent(receipt.agent_id, false, client);
       if (this.client === client && receipt.session_id && operation.navigation === this.navigation) await this.openSession(receipt);
-    }, client);
+    }, client, { target: nativeTarget(receipt), operation: operation.operation });
     const failure = Object.values(receipt.result.steps).find(step => step?.status === 'failed');
     if (failure) throw new HostError('business', failure.error.message, { receipt, fault: failure.error, acceptance: receipt.result.delivery === 'accepted' ? 'accepted' : 'rejected' });
   }
-  async updateSession(target, changes, revision, client = this.client) {
+  async updateSession(target, changes, revision, client = this.client, operation) {
     const ref = this.requireTarget(target, client);
     if (revision == null) revision = (await client.call('session.get', { target: ref })).config_revision;
-    const receipt = await client.call('session.update', { target: ref, operation_id: newId(), expected_config_revision: revision, changes });
+    const request = { target: ref, operation_id: newId(), expected_config_revision: revision, changes };
+    if (operation) operation.operation = { kind: 'session.update', operation_id: request.operation_id };
+    const receipt = await client.call('session.update', request);
     await this.observeAfter(async () => {
       if (this.observation?.matches({ ...client.info, ...ref })) await this.refreshSession(this.observation, client);
       await this.refreshAgents(client);
-    }, client);
+    }, client, { target: nativeTarget(receipt), operation: { kind: 'session.update', operation_id: request.operation_id } });
     return { receipt };
   }
   async query(spec, target) {
@@ -345,7 +450,8 @@ export class HostApplication {
     const ref = this.requireTarget(spec.target || target);
     if (spec.kind === 'context') {
       const value = await client.call('session.context', { target: ref }), d = value.data;
-      return { native: d, tokens: null, window: d.active_turn?.model.context_window, percent: null, compacting: !!d.compaction && d.compaction.state.phase !== 'finished', failure: d.block_reason?.message || '' };
+      const compact = d.compaction, result = compact?.source?.kind === 'manual' && compact.state.phase === 'finished' && compact.state.result;
+      return { native: d, tokens: null, window: d.active_turn?.model.context_window, percent: null, compacting: !!compact && compact.state.phase !== 'finished', failure: d.block_reason?.message || d.history_save?.fault?.message || (result?.outcome === 'failed' ? result.fault.message : '') };
     }
     if (spec.kind === 'files') {
       const value = await client.call('workspace.files', { target: ref, request: { directory: '', recursive: true, query: spec.query || null, cursor: spec.cursor || null, limit: 50 } });

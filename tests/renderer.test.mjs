@@ -13,7 +13,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const live = (id, status, extra = {}) => ({ id, title: id, workspace: '/w', updated_at: '2026-10-25T00:00:00Z', current: false, live: true, status, started_ms: null, unseen: false, ...extra });
 const idle = (id, extra = {}) => ({ id, title: id, workspace: '/w', updated_at: '2026-10-24T00:00:00Z', current: false, live: false, ...extra });
 const commands = [{ name: 'fix-tests', description: 'Run the tests and fix failures', hint: '[path]' }, { name: 'review', description: 'Review', hint: '' }];
-const tool = (tool_call_id, name, extra = {}) => ({ type: 'tool', tool_call_id, name, detail: tool_call_id, input: null, state: 'completed', output: [], ...extra });
+const tool = (tool_call_id, name, extra = {}) => ({ type: 'tool', tool_call_id, name, detail: tool_call_id, input: null, state: 'completed', output_text: '', output_lines: 0, ...extra });
 const said = (text, reasoning = '', streaming = false) => ({ type: 'assistant', turn_id: 'turn', response_index: 1, reasoning, text, streaming });
 const ask = text => ({ type: 'user', kind: 'message', text, at: 0 });
 const end = (turn_id, extra = {}) => ({ type: 'turn_end', turn_id, outcome: 'completed', finished_at: '1970-01-01T00:00:47.000Z', ...extra });
@@ -348,7 +348,7 @@ test('consecutive reads and searches group into one row with a count', () => {
 });
 
 test('find matches messages, answers, thinking, tool targets and output case-insensitively', () => {
-  const bl = [ask('Fix the Parser'), said('The parser is fixed', 'think about PARSER'), tool('a', 'bash', { detail: 'cargo test', output: ['parser ok'] }), end('t')];
+  const bl = [ask('Fix the Parser'), said('The parser is fixed', 'think about PARSER'), tool('a', 'bash', { detail: 'cargo test', output_text: 'parser ok', output_lines: 1 }), end('t')];
   assert.deepEqual(plain(MC.findBlocks(bl, 'parser', 0, 4)), [0, 1, 2]);
   assert.deepEqual(plain(MC.findBlocks(bl, 'cargo', 1, 4)), [2]);
   assert.deepEqual(plain(MC.findBlocks(bl, '', 0, 4)), []);

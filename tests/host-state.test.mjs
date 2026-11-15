@@ -54,6 +54,6 @@ test('tool channels use native ToolCall identity even with a response index in s
   const view = new SessionObservation(session), tool = { ...session, turn_id: 'turn', load_id: 'load', tool_call_id: 'tool' };
   view.event({ ...tool, kind: 'toolcall.state', data: { response_index: 2, name: 'bash', state: 'running', runner_revision: 4 } }); view.render();
   view.event({ ...tool, kind: 'toolcall.output.delta', data: { channel: 'stdout', start: 0, end: 5, text: 'hi🙂'.slice(1) } });
-  const block = view.render().blocks[0]; assert.equal(block.output.join('\n'), 'i🙂'); assert.equal(block.tool_call_id, 'tool'); assert.equal(block.response_index, 2);
+  const block = view.render().blocks[0]; assert.equal(block.output_text, 'i🙂'); assert.equal(block.output_lines, 1); assert.equal(block.tool_call_id, 'tool'); assert.equal(block.response_index, 2);
   assert.equal(statusView({ compaction: { state: { phase: 'finished' } } }).compacting, false);
 });

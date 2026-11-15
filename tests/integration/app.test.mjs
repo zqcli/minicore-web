@@ -7,12 +7,13 @@ import { HostApplication } from '../../web/host-app.js';
 import { deadline, hostFixture, initialAgent } from '../support/host.mjs';
 
 function application() {
-  const store = MC.createStore(), waiters = new Set();
-  const app = new HostApplication(store, () => {
+  const store = MC.createStore(), waiters = new Set(), notices = [];
+  const app = new HostApplication(store, (_event, effects) => {
+    if (effects.notice) notices.push(effects.notice);
     for (const waiter of waiters) if (waiter.predicate()) { waiters.delete(waiter); waiter.resolve(); }
   });
   return {
-    app, store,
+    app, store, notices,
     async wait(predicate, label) {
       if (predicate()) return;
       const waiter = { ...Promise.withResolvers(), predicate }; waiters.add(waiter);
@@ -127,4 +128,95 @@ test('manual compaction and draft Session creation preserve native lifecycle res
   await ui.execute(MC.intents.deleteSession(secondId));
   await ui.wait(() => !store.state.sessions.some(session => session.id === secondId), 'deleted Session removed from catalog');
   assert.notEqual(store.state.session?.id, secondId, 'the UI cannot keep a deleted Session as an actionable target');
+});
+
+test('native upstream error remains complete through live state, fresh history and export', { timeout: 30000 }, async t => {
+  const fixture = await hostFixture(); t.after(() => fixture.close());
+  const ui = application(), config = { initial_agent: initialAgent(), templates: [] };
+  await ui.app.initialize(await fixture.connect(), config);
+  await ui.execute(MC.intents.newSession(fixture.workspace, null, config.initial_agent));
+  await ui.execute(MC.intents.submit('Return a controlled upstream error'));
+  const message = '上游原始错误🙂\nThe requested model is unavailable.\nKeep this final diagnostic line.';
+  (await fixture.provider.next()).error(message, { requestId: 'web-failure-request' });
+  await ui.wait(() => ui.store.blocks.some(b => b.type === 'turn_end' && b.outcome === 'failed'), 'failed native Turn');
+  const live = MC.turnEnd(ui.store.blocks.find(b => b.type === 'turn_end'), null, 0).failure;
+  for (const line of message.split('\n')) assert.ok(live.message.includes(line), live.message);
+  const turn = [...ui.app.observation.turns.values()].find(turn => turn.fault);
+  assert.equal(turn.fault.details.http_status, 400);
+  assert.equal(turn.fault.details.provider_type, 'invalid_request_error');
+  assert.equal(turn.fault.details.provider_code, 'fixture_error');
+  assert.equal(turn.fault.details.request_id, 'web-failure-request');
+  const restored = application();
+  await restored.app.initialize(await fixture.connect(), config);
+  const historical = restored.store.blocks.find(b => b.type === 'turn_end' && b.outcome === 'failed');
+  assert.ok(historical?.reason);
+  const displayed = MC.turnEnd(historical, null, 0).failure;
+  for (const line of message.split('\n')) {
+    assert.ok(displayed.message.includes(line), displayed.message);
+    assert.ok(MC.exportMd(restored.store.state, restored.store.blocks).includes(line));
+  }
+  assert.equal(fixture.provider.bodies.length, 1, 'reopening history never resends the failed business input');
+});
+
+test('Responses reasoning boundaries survive real WSS streaming and canonical history', { timeout: 30000 }, async t => {
+  const fixture = await hostFixture({ api: 'responses' }); t.after(() => fixture.close());
+  const ui = application(), config = { initial_agent: initialAgent(), templates: [] };
+  await ui.app.initialize(await fixture.connect(), config);
+  await ui.execute(MC.intents.newSession(fixture.workspace, null, config.initial_agent));
+  await ui.execute(MC.intents.submit('Stream distinct reasoning parts'));
+  const model = await fixture.provider.next();
+  model.reasoning([['Preparing ', 'verification'], [], ['第二部分🙂']]);
+  model.reasoning([['Third ', 'item']]);
+  const expected = 'Preparing verification\n第二部分🙂\nThird item';
+  await ui.wait(() => ui.store.blocks.some(b => b.reasoning === expected), 'live reasoning boundaries');
+  model.finish('The visible answer is complete.');
+  await ui.wait(() => !ui.store.state.status.busy && ui.store.blocks.some(b => b.text === 'The visible answer is complete.'), 'Responses Turn completion');
+  const restored = application();
+  await restored.app.initialize(await fixture.connect(), config);
+  assert.equal(restored.store.blocks.find(b => b.type === 'assistant' && b.reasoning)?.reasoning, expected);
+  assert.equal(fixture.provider.bodies.length, 1);
+});
+
+test('failed manual compaction is reported once for its background Session and in Context', { timeout: 60000 }, async t => {
+  const agent = initialAgent(); agent.config.session_defaults.execution.compaction.target_percent = 1;
+  const fixture = await hostFixture({ agent }); t.after(() => fixture.close());
+  const ui = application(), config = { initial_agent: agent, templates: [] };
+  const connection = await fixture.connect();
+  await ui.app.initialize(connection, config);
+  await ui.execute(MC.intents.newSession(fixture.workspace, null, agent));
+  const a = MC.captureTarget(ui.store, {});
+  await ui.execute(MC.intents.submit('Retain the older history group'));
+  const longAnswer = 'Keep this older record for compaction. '.repeat(3000);
+  (await fixture.provider.next()).finish(longAnswer);
+  await ui.wait(() => !ui.store.state.status.busy && ui.store.blocks.some(b => b.text === longAnswer), 'older history');
+  await ui.execute(MC.intents.submit('Keep this newer group intact'));
+  (await fixture.provider.next()).finish('Newer record.');
+  await ui.wait(() => !ui.store.state.status.busy && ui.store.blocks.some(b => b.text === 'Newer record.'), 'newer history');
+  await ui.execute(MC.intents.newSession(fixture.workspace, a.agent_id));
+  await ui.execute(MC.intents.submit('Create a separate viewed Session'));
+  (await fixture.provider.next()).finish('Session B.');
+  await ui.wait(() => !ui.store.state.status.busy && ui.store.blocks.some(b => b.text === 'Session B.'), 'Session B ready');
+  const b = MC.captureTarget(ui.store, {});
+  await ui.app.openSession(a);
+  const accepted = await ui.execute(MC.intents.compact());
+  const model = await fixture.provider.next();
+  await ui.app.openSession(b);
+  const message = 'Compaction provider refused the request.\n保留完整压缩错误🙂';
+  model.error(message, { requestId: 'web-compaction-request' });
+  await ui.wait(() => ui.notices.some(n => n.operation?.kind === 'session.compact' && n.target?.session_id === a.session_id), 'background compaction failure');
+  const failures = () => ui.notices.filter(n => n.operation?.kind === 'session.compact');
+  assert.equal(failures().length, 1);
+  const failure = failures()[0];
+  assert.equal(failure.target.agent_id, a.agent_id);
+  assert.equal(failure.target.host_incarnation, connection.info.host_incarnation);
+  assert.equal(failure.operation.operation_id, accepted.receipt.operation_id);
+  for (const line of message.split('\n')) assert.ok(failure.fault.message.includes(line), failure.fault.message);
+  assert.equal(ui.store.sid, b.session_id);
+  const snapshot = await connection.call('session.state', { target: { agent_id: a.agent_id, session_id: a.session_id } });
+  ui.app.hostEvent({ ...snapshot, kind: 'session.state' });
+  ui.app.hostEvent({ ...snapshot, kind: 'session.state' });
+  assert.equal(failures().length, 1, 'repeat native state reads cannot repeat the same failure notification');
+  const context = await ui.app.query(MC.queries.context(), a);
+  for (const line of message.split('\n')) assert.ok(context.failure.includes(line), context.failure);
+  assert.equal(context.compacting, false);
 });

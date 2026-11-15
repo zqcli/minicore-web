@@ -1,37 +1,45 @@
 # MiniCore Web
 
-MiniCore Web 0.1.0 是 MiniCore Host 的独立静态网页客户端。界面迁移自
+MiniCore Web 0.1.1 是 MiniCore Host 的独立静态网页客户端。界面迁移自
 minicore-tui 0.9.9 的网页，保留原有布局、样式、增量 Markdown、工具卡片和
 桌面／手机交互，直接使用 Host 原生 WSS JSON-RPC。
 
-工作分支为 `dev`。配套后端为 **minicore-host 0.11.1 / SPEC 4.10.3**；
-CI 使用固定的 Host 提交验证实际协议。
+工作分支为 `dev`。配套后端为 **minicore-host 0.12.5 / SPEC 4.11.4**；
+CI 固定 Host 提交 `355d4b8bac4a3a634cd83a49fbf33fea7b67a262` 验证实际协议。
+Web 的行为约定见 [SPEC.md](SPEC.md)。
 
 ## 运行
 
 ### 1. 配置并启动独立 Host
 
 从 [minicore-host](https://github.com/zqcli/minicore-host/tree/dev) 构建或取得
-0.11.1 可执行文件。可从本仓库的 `examples/host.web.json` 开始配置：
+0.12.5 可执行文件。可从本仓库的 `examples/host.web.json` 开始配置，
+将它放置为所选配置目录下的 `host.json`：
 
 - 替换模型 endpoint、provider_model 等提供方配置；模型密钥通过配置指定的环境变量提供。
 - 将 `workspace_roots` 改为 Host 机器上实际存在的绝对目录。默认空数组不会开放任何目录。
 - 设置 `network.listen`，并通过 `network.access_key_env` 指定 Host 访问密钥的环境变量。
 - 配置与浏览器所用 Host 域名匹配、且受浏览器信任的 TLS 证书。
 
-首次启动请使用新的、独立的 `--data-root` 目录。`--config` 只用于初始化新的数据根；
-再次打开已有数据根时，以其中保存的 Host 配置为准。
+Host 每次启动读取 `--config-dir` 下的 `host.json`；配置目录与 `--data-root`
+相互独立。`agents/` 和 `roles/` 可以不存在，Web 的首次动态 Agent 创建流程仍可使用。
+如果已经声明了文件管理的 Agent，重新启动时必须保留对应声明。
+
+从本项目之前配套的 Host 0.11.1 升级时，请使用新的、独立的数据根。
+Host 0.12.5 不自动转换旧存储格式或旧目录布局；保留旧数据副本，不把旧目录当成
+已经完成迁移的新格式。支持格式的数据根可在再次启动时复用身份和已保存的历史。
 
 ```sh
 minicore-host \
   --data-root /absolute/path/to/minicore-web-data \
-  --config /absolute/path/to/host.web.json \
+  --config-dir /absolute/path/to/minicore-config \
   --tls-cert /absolute/path/to/fullchain.pem \
   --tls-key /absolute/path/to/privkey.pem
 ```
 
 Host 持有 Agent、Session、Turn、工具、审批、配置和持久化。
-这里使用独立 Host 的 WSS 服务。当前 minicore-tui 的内嵌 Host 不开放网络监听，
+这里使用独立 Host 的 WSS 服务，升级 TUI 不会替换这个独立 Host。
+当前 minicore-tui 的内嵌 Host 不开放网络监听，
 不能把它当成上述 WSS 服务；两个 Host 进程也不能共用同一数据根目录。
 
 ### 2. 配置并启动 Web
@@ -116,6 +124,22 @@ PWA 只缓存本站点作用域内的应用资源；不缓存配置、Host 访�
 | 上下文 | 展示 Host 已报告的上下文事实、历史计数、使用量及压缩状态；可手动压缩 |
 | 本地交互 | 查找、复制、导出已加载内容、主题、字体、快捷键、手机抽屉、PWA |
 
+### 0.1.1 的显示与操作改进
+
+- Session 列表在标题旁固定显示原生 ID 的前 8 位。同名、重命名和窄屏截断时，
+  可据此辨认会话；可访问名称和 **Copy session id** 保留完整 ID。
+- 实时和历史失败都显示 Host 实际提供的原因。实时 Fault 有 HTTP 状态、提供方
+  type/code、request ID 时，可展开查看；旧历史只有 reason 时不补造这些字段。
+- **Settings → Last error** 可重新查看并复制本标签页最近一次错误，包含实际存在的
+  原始 Host、Agent、Session 和操作身份。关闭提示后仍可查看；退出登录会清除记录。
+- 手动压缩受理后，若后台完成失败，会提示原 Session 和完整原因，Context 也显示该原因。
+  保留打开的 Context 面板后切换 Session，面板仍查看并操作原会话。
+- 工具卡片预览最多显示最后 20 行、4096 个 UTF-16 单元，截断位置保留完整 Unicode
+  字符；折叠错误和提示也限制预览长度。**Open**、**Copy** 和导出已加载内容保留完整正文。
+  这些限制只作用于展示副本，不改变工具结果、传输或持久化历史。
+- 浏览器继续使用 **Ctrl/Cmd+Enter** 发送或 steer，运行中 **Alt/Option+Enter** 排队
+  follow-up，**Shift+Enter** 换行。输入法组合过程中不触发全局 Escape/停止快捷键。
+
 ### 语义说明
 
 - 首条成功初始化的连接获得操作权；其他连接保持只读。操作连接断开后，原只读连接
@@ -127,7 +151,7 @@ PWA 只缓存本站点作用域内的应用资源；不缓存配置、Host 访�
 - 当前 Turn 的配置已经绑定。“Future turn approval”只更新以后 Turn 使用的配置，
   不会把正在等待的审批自动放行。
 - `@` 插入文本路径引用，首版没有文件上传。Share or export 导出当前已加载的对话内容，
-  不会声称导出了尚未读取的历史。
+  包含已加载的完整工具输出和失败原因；部分观察结果会明确标注，不会声称导出了尚未读取的历史。
 - Host 没有报告的实时上下文 token 总量不显示成估算百分比。可以读取实际历史计数、
   最新响应使用量和自动压缩配置。
 - 目录选择使用 `workspace.roots/list/mkdir`；已有会话的文件与变更查询沿用其原生工作区
@@ -164,8 +188,11 @@ MINICORE_HOST_BIN=/absolute/path/to/minicore-host npm run test:browser
 
 集成和浏览器测试启动实际 Host，使用实际 WSS、磁盘持久化、Git 工作区和本地工具。
 只有模型 SSE 回答由明确的本地测试提供方控制；这些检查不是实时外部模型提供方验证。
+测试服务显式提供 Chat Completions、Responses 分段推理和 HTTP 错误；不需要真实模型密钥。
 浏览器测试保留桌面与手机截图，失败时也保存当前页面。CI 固定 Host 源码提交并执行
 语法／导入检查、单元测试、构建、真实 WSS 集成和 Chromium 场景。
+输入法测试使用浏览器合成 composition 标志验证事件传播，不代表已验证实体 macOS、Safari
+或特定系统输入法；终端 Option-as-Meta 和 ESC 序列不属于本客户端。
 
 ## 代码组织
 

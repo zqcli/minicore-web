@@ -1,9 +1,9 @@
 # MiniCore Web
 
-## 0.1.1 upgrade — design accepted, implementation in progress
+## 0.1.1 upgrade — implemented, final browser verification pending
 
 - 2026-11-16: user authorized the Web upgrade following the read-only TUI/Web
-  review. `SPEC.md` records the behavior before implementation. Planned release:
+  review. `SPEC.md` records the behavior before implementation. Release:
   0.1.1; companion Host 0.12.5 / SPEC 4.11.4, fixed revision
   `355d4b8bac4a3a634cd83a49fbf33fea7b67a262`.
 - Scope: Host launch/CI baseline, complete historical and recalled errors with
@@ -14,7 +14,33 @@
   rendering and browser UI paths. Effective runtime settings are not independently
   attested. The coordinator owns specification, deployment, test fixtures and
   combined real-Host/browser validation.
-- No implementation or new-version test result is claimed at this design checkpoint.
+- Design-first checkpoint: local `31c74198304c89a1787425ff3134f3c7dc21e711`,
+  published Git object `8937fce4daae5525a84c81a866a37ad0b2a08ff2`, identical tree
+  `f03b6cf653ccbaf0fc84d1de7be7031987ecd690`. The implementation follows it; no
+  published history is rewritten and `main` is unchanged.
+- Implemented all scoped changes. Tool preview is limited to 20 lines / 4096
+  UTF-16 units, collapsed failure preview to 3 lines / 2048 units, without
+  splitting Unicode scalar values. Full output retains final newlines; explicit
+  Open/Copy/export includes complete observed text, with partial data labelled.
+  Native partial/recovery notices remain visible outside automatic work folds.
+- Local verification: Node 24.22.1; 32 JS modules/imports checked, 102 unit/UI
+  cases passed, static build passed, seven real Host TLS/WSS integration cases
+  passed, no failures or skipped cases. The upgrade adds 38 unit/UI regressions
+  and three real-WSS cases to the original suites.
+- WSS acceptance additionally exercises native upstream HTTP failure through
+  live state/fresh history/export, Responses reasoning part/item boundaries,
+  and original-target manual compaction failure while another Session is viewed.
+  The Host executable was built with Rust 1.90.0 from the exact fixed source
+  above. Model responses/errors come only from explicitly controlled local
+  fixtures; no real provider credentials or live-provider result are involved.
+- Seven browser scenarios are committed (two retained, five new). They exercise
+  desktop/mobile behavior, complete error history, same-title and renamed
+  Sessions, captured Context, live menu state/focus, read-only/disconnect,
+  composition guards and send/steer/follow-up keys, a 1.4 MB Unicode tool result,
+  and background compaction error recall/Copy. Local Chromium launch is blocked
+  by `socket() failed: Operation not permitted`; execution and screenshots are
+  pending the repository's CI. Synthetic composition flags do not certify a
+  physical keyboard, macOS/Safari or a specific system IME.
 
 ## 0.1.0 delivery record
 

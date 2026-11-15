@@ -1,3 +1,5 @@
+import { boundedPreview } from './core.js';
+
 // ---- ui ----
 const NS = 'http://www.w3.org/2000/svg';
 // Late-bound calls upward in the import graph: the module that defines one sets it, callers below it use it here.
@@ -63,7 +65,7 @@ export function keepFocus(host, change, into = host) {
 const swap = (host, nodes) => keepFocus(host, () => fill(host, nodes));
 export const errBox = (text, cls, alert = true) => h('div', { class: 'serr' + (cls ? ' ' + cls : ''), role: alert && 'alert' }, icon('warn', 'sm'), h('span', '', text));
 export const rowText = (label, sub, mono) => h('span', 'rt', h('span', 'rm' + (mono ? ' mono' : ''), label), sub && h('span', 'rs', sub));
-export const menuRow = (m, name, label, fn, o = {}) => h('button', { class: 'row flat' + (o.cls ? ' ' + o.cls : ''), disabled: o.disabled, 'data-focus': o.focus, onclick: () => { m.close(true); fn(); } },
+export const menuRow = (m, name, label, fn, o = {}) => h('button', { class: 'row flat' + (o.cls ? ' ' + o.cls : ''), disabled: o.disabled, 'data-k': name + ':' + encodeURIComponent(label), 'data-focus': o.focus, onclick: () => { m.close(true); fn(); } },
   icon(name, 'ri'), rowText(label, o.sub, o.mono));
 
 // ---- copy, share, toasts, announcements ----
@@ -92,11 +94,43 @@ export const copyButton = (text, label = 'Copy', p = {}) => h('button', { ...p, 
 export function share(title, text, btn) {
   if (navigator.share) navigator.share({ title, text }).catch(() => {}); else copyText(text, btn);
 }
+// This tab retains one diagnostic. Its target belongs to the failed action, never the current view.
+let recalledError = null;
+export const lastError = () => recalledError;
+export function rememberError(record) {
+  recalledError = structuredClone({ ...record, text: record.text ?? record.fault?.message ?? 'Host request failed' });
+  return recalledError;
+}
+export function clearLastError() {
+  recalledError = null;
+  findSheet('error')?.close(true);
+  for (const node of $('toasts').querySelectorAll('.toast.error')) node.remove();
+}
+export const showError = record => toast(record.text ?? record.fault?.message ?? 'Host request failed', 'error', null, record);
+export const openLastError = () => openError(recalledError);
+function openError(record) {
+  if (!record) return;
+  const target = record.target || {}, operation = record.operation || {};
+  const kv = (label, value) => value != null && [h('dt', '', label), h('dd', 'mono', String(value))];
+  sheet({ key: 'error', cls: 'full', title: 'Last error',
+    body: () => [h('pre', { class: 'error-message', tabindex: '0' }, record.text),
+      h('dl', 'kv mt16', kv('Host endpoint', record.endpoint), kv('Host', target.host_id), kv('Host incarnation', target.host_incarnation),
+        kv('Agent', target.agent_id), kv('Session', target.session_id), kv('Load', target.load_id), kv('Turn', target.turn_id), kv('Tool call', target.tool_call_id),
+        kv('Operation', operation.kind), kv('Operation id', operation.operation_id), kv('Target operation id', operation.target_operation_id), kv('Message id', operation.message_id), kv('Interaction id', operation.interaction_id),
+        kv('Local action', record.action?.kind), kv('Local action id', record.action?.id), kv('Delivery', record.acceptance)),
+      record.fault && [h('h3', 'sec2', 'Host fault'), h('pre', { class: 'error-fault', tabindex: '0' }, JSON.stringify(record.fault, null, 2))]],
+    foot: () => copyButton(JSON.stringify(record, null, 2), 'Copy error', { class: 'btn primary' }),
+  });
+}
 // Errors stay until dismissed; an action ("Open") removes the toast and runs.
-export function toast(text, level, act) {
+export function toast(text, level, act, error) {
   const box = $('toasts'), sticky = level === 'error';
-  const n = h('div', { class: 'toast' + (sticky ? ' error' : ''), role: sticky ? 'alert' : 'status' }, sticky && icon('warn', 'sm'), h('span', '', text),
+  const record = !sticky ? null : error && error === recalledError ? error : rememberError(error || { text });
+  const prefix = record?.target?.session_id ? 'Session ' + record.target.session_id.slice(0, 8) + ' · ' : '';
+  const preview = sticky ? boundedPreview(text, { maxLines: 3, maxChars: 240 - prefix.length }) : { text };
+  const n = h('div', { class: 'toast' + (sticky ? ' error' : ''), role: sticky ? 'alert' : 'status' }, sticky && icon('warn', 'sm'), h('span', '', prefix + preview.text + (preview.truncated ? '… [truncated]' : '')),
     act && h('button', { class: 'tact', onclick: () => { n.remove(); act.fn(); } }, act.label),
+    sticky && h('button', { class: 'tact', onclick: () => { n.remove(); openError(record); } }, 'Details'),
     sticky && h('button', { class: 'ib', 'aria-label': 'Dismiss', onclick: () => n.remove() }, icon('x', 'sm')));
   box.append(n);
   while (box.children.length > 3) box.firstChild.remove();

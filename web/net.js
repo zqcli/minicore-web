@@ -1,7 +1,8 @@
 import * as MC from './core.js';
 import { HostConnection, accessKeyName, loadConfig } from './host.js';
 import { HostApplication } from './host-app.js';
-import { $, closeAll, fill, h, icon, spin, toast } from './ui.js';
+import { statusView } from './host-state.js';
+import { $, clearLastError, closeAll, fill, h, icon, rememberError, showError, spin, toast } from './ui.js';
 
 export const S = MC.createStore();
 export let HOST = '';
@@ -15,6 +16,19 @@ export const tz = () => new Date().getTimezoneOffset();
 export const hostNow = () => Date.now();
 export const stampAt = ms => MC.stamp(ms, hostNow(), tz());
 export const turnStatus = () => S.state?.status || {};
+export function targetSession(target) {
+  const state = S.state;
+  if (!target || !state || target.host_id !== state.host?.host_id || target.host_incarnation !== state.host?.host_incarnation) return null;
+  const matches = session => session?.id === target.session_id && session?.agent_id === target.agent_id;
+  return matches(state.session) ? state.session : state.sessions.find(matches) || null;
+}
+export function sessionStatus(target) {
+  const session = targetSession(target);
+  if (!session) return { available: false, busy: false, compacting: false };
+  const status = session.state ? statusView(session.state) : session === S.state.session ? turnStatus()
+    : { busy: session.status === 'running' || session.status === 'approval', compacting: session.status === 'compacting' };
+  return { ...status, available: true };
+}
 export const viewed = () => S.state?.session || S.state?.draft || {};
 export const online = () => app.online;
 export const operating = () => app.operating;
@@ -26,7 +40,7 @@ export const pump = () => {};
 
 function run(operation) {
   if (!operation) { toast('Local confirmation buffer is full · resolve or discard an unconfirmed message', 'error'); return false; }
-  operation.authSession = authSession; operation.navigation = app.navigation;
+  operation.authSession = authSession; operation.navigation = app.navigation; operation.endpoint = HOST;
   const session = S.state?.sessions.find(s => s.id === operation.target.session_id && s.agent_id === operation.target.agent_id);
   operation.config_revision = operation.spec.expected_config_revision ?? (S.state?.session && S.state.session.id === operation.target.session_id ? S.state.session.config_revision : session?.config_revision);
   if (operation.kind === 'update_agent') operation.config_revision = operation.spec.expected_config_revision ?? S.state.agent?.config_revision;
@@ -45,12 +59,32 @@ function finish(operation, result) {
   const current = operation.target.session_id ? S.sid === operation.target.session_id && S.state?.session?.agent_id === operation.target.agent_id
     : operation.navigation === app.navigation || result.receipt?.session_id === S.sid;
   const ack = { ...operation, ...result, current, text: result.text ?? operation.text };
+  if (!result.ok || result.start_error || result.error) ack.errorRecord = rememberError(failureRecord(result, operation.target, operation.operation, { kind: operation.kind, id: operation.id }, operation.endpoint));
   if (!result.ok && result.acceptance === 'unknown' && operation.text != null) { operation.st = 'unconfirmed'; ack.unconfirmed = true; }
   else S.intents.delete(operation.id);
   if (on.message) on.message(null, { ack, state: true }); else operation.own?.(ack);
 }
+function failureRecord(result, target, operation, action, endpoint = HOST) {
+  const receipt = result.receipt, fault = result.start_error || result.fault;
+  const identities = ['host_id', 'host_incarnation', 'agent_id', 'session_id', 'load_id', 'turn_id', 'response_index', 'tool_call_id'];
+  const original = Object.fromEntries(identities.filter(key => target?.[key] != null).map(key => [key, target[key]])), nativeOperation = { ...operation };
+  const method = receipt?.kind || operation?.kind;
+  // Creation addresses an owner; a previously viewed Session is not its receiver.
+  if (method === 'agent.create' || method === 'session.create') {
+    for (const key of ['session_id', 'load_id', 'turn_id', 'response_index', 'tool_call_id']) delete original[key];
+    if (method === 'agent.create') delete original.agent_id;
+  }
+  for (const key of identities) if (receipt?.[key] != null) original[key] = receipt[key];
+  if (receipt?.result?.load_id != null) original.load_id = receipt.result.load_id;
+  for (const key of ['kind', 'operation_id', 'message_id']) if (receipt?.[key] != null) nativeOperation[key] = receipt[key];
+  const reason = MC.errorText(result.error ?? fault?.message);
+  const text = result.start_error ? 'Queued, but the turn could not start: ' + result.start_error.message
+    : result.acceptance === 'unknown' ? 'Not confirmed · it may or may not have arrived\n' + reason : reason;
+  return { text, endpoint, target: original, ...(Object.keys(nativeOperation).length && { operation: nativeOperation }),
+    ...(action && { action }), ...(fault && { fault }), ...(result.acceptance && { acceptance: result.acceptance }) };
+}
 export function intent(spec, own, draft) {
-  if (!online()) { toast('Not connected', 'error'); return false; }
+  if (!online()) { showError({ text: 'Not connected', endpoint: HOST, target: spec.target || MC.captureTarget(S, spec), action: { kind: spec.kind } }); return false; }
   return run(MC.intent(S, spec, own, draft));
 }
 export function resend(id) {
@@ -60,12 +94,25 @@ export function resend(id) {
 export function discard(id) { if (confirm('This message may already have arrived. Discard only its retained local copy?') && MC.discardUnconfirmed(S, id)) repaint(); }
 export function ask(spec, callback) {
   const target = structuredClone(spec.target || (spec.source?.session_id && spec.source?.agent_id ? spec.source : MC.captureTarget(S, spec)));
-  app.query(spec, target).then(data => callback({ ok: true, data })).catch(error => callback({ ok: false, error: error.message, message: error.message, fault: error.fault }));
+  const auth = authSession, endpoint = HOST;
+  app.query(spec, target).then(data => callback({ ok: true, data })).catch(error => {
+    if (auth !== authSession) return;
+    const result = { ok: false, error: error.message, message: error.message, fault: error.fault, target };
+    result.errorRecord = rememberError(failureRecord(result, target, null, { kind: spec.kind }, endpoint)); callback(result);
+  });
 }
 export function fsCall(spec, callback) {
-  app.files(spec).then(result => callback({ ok: true, ...result })).catch(error => callback({ ok: false, error: error.message, message: error.message, fault: error.fault, receipt: error.receipt }));
+  const auth = authSession, endpoint = HOST, target = { host_id: S.state?.host?.host_id, host_incarnation: S.state?.host?.host_incarnation };
+  app.files(spec).then(result => callback({ ok: true, ...result })).catch(error => {
+    if (auth !== authSession) return;
+    const result = { ok: false, error: error.message, message: error.message, fault: error.fault, receipt: error.receipt, target };
+    result.errorRecord = rememberError(failureRecord(result, target, null, { kind: spec.kind }, endpoint)); callback(result);
+  });
 }
-export function recoverObservations() { return app.recover().catch(error => toast(error.message, 'error')); }
+export function recoverObservations() {
+  const auth = authSession, endpoint = HOST, target = { host_id: S.state?.host?.host_id, host_incarnation: S.state?.host?.host_incarnation };
+  return app.recover().catch(error => { if (auth === authSession) showError(failureRecord({ error: error.message, fault: error.fault }, target, null, { kind: 'recover' }, endpoint)); });
+}
 
 function show(name) {
   screen = name; $('signin').hidden = name !== 'signin'; $('gate').hidden = name !== 'gate'; $('app').hidden = name !== 'main';
@@ -104,6 +151,8 @@ async function connect(key, login = false) {
   client = connection;
   try {
     await connection.connect(key);
+    if (client !== connection) return;
+    if (S.state?.host?.host_id && S.state.host.host_id !== connection.info.host_id) { authSession++; clearLastError(); }
     await app.initialize(connection, config);
     if (client !== connection) return;
     sessionStorage.setItem(accessKeyName(HOST), key);
@@ -130,6 +179,7 @@ $('pweye').addEventListener('click', () => {
 });
 export function signOut() {
   authSession++;
+  clearLastError();
   // A submitted draft can outlive sign-out; preserve its duplicate-send warning.
   for (const operation of S.intents.values()) if (operation.text != null && operation.draft) {
     const { key, version } = operation.draft;
@@ -148,6 +198,6 @@ export function wake() {
 }
 export function handshake(fx) { if (fx.snapshot && S.state && screen !== 'main') show('main'); return true; }
 export async function boot() {
-  try { config = await loadConfig(); HOST = config.host_url; if (sessionStorage.getItem(accessKeyName(HOST))) await connect(); else signin(); }
+  try { config = await loadConfig(); if (HOST && HOST !== config.host_url) { authSession++; clearLastError(); } HOST = config.host_url; if (sessionStorage.getItem(accessKeyName(HOST))) await connect(); else signin(); }
   catch (error) { halted = true; gate(error.message, true); }
 }

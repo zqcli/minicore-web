@@ -135,10 +135,12 @@ input.tf:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--acs)}
 .pill{position:relative;display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 14px;border-radius:18px;background:var(--fill);color:var(--tx2);font-size:var(--t14);font-weight:500}
 #toasts{position:absolute;left:0;right:0;bottom:8px;z-index:6;display:flex;flex-direction:column;align-items:center;gap:8px;padding:0 16px;pointer-events:none}
 .toast{pointer-events:auto;display:flex;align-items:center;gap:8px;max-width:min(560px,100%);min-height:44px;padding:6px 6px 6px 14px;border-radius:var(--r2);background:var(--tx);color:var(--bg);font-size:var(--t14);line-height:1.35;box-shadow:var(--sh);animation:rise var(--fast) var(--ease)}
-.toast>span{flex:1;min-width:0;padding:4px 8px 4px 0}
+.toast>span{flex:1;min-width:0;padding:4px 8px 4px 0;white-space:pre-wrap;overflow-wrap:anywhere}
 .toast.error{background:var(--sf);color:var(--er);box-shadow:var(--sh),inset 0 0 0 1px var(--line)}
 .toast .tact{min-height:36px;padding:0 12px;border-radius:var(--r1);font-weight:600;color:inherit;background:rgba(127,127,127,.18)}
 .toast .ib{width:36px;height:36px;color:inherit}
+.error-message,.error-fault{margin:0;padding:12px;border-radius:var(--r2);background:var(--fill);font:var(--t14)/1.45 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.error-message{color:var(--er)}
 
 /* navigation: drawer on phones, sidebar from 900 px */
 /* The drawer and scrim are not fixed: iOS Safari tints the status bar from a fixed element on the top edge, which kept
@@ -163,6 +165,7 @@ input.tf:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--acs)}
 .srow.cur{background:var(--fill)}
 .sopen{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:44px;padding:0 42px 0 10px;border-radius:var(--r1)}
 .sopen .rm{font-size:15px}
+.sid{flex:none;font:11px/1.4 var(--mono);color:var(--tx3);padding:2px 4px;border-radius:4px;background:var(--fill);white-space:nowrap}
 .sopen:active{background:var(--fill)}
 .sst{width:16px;height:16px;flex:none;display:grid;place-items:center;color:var(--tx3)}
 .sst.warn{color:var(--wac)}

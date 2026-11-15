@@ -1,56 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, readFile, stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
-import { HOST_KEY, hostFixture } from '../support/host.mjs';
-
-async function browserFixture(t, mobile = false) {
-  const host = await hostFixture();
-  let browser;
-  t.after(async () => { await browser?.close(); await host.close(); });
-  browser = await chromium.launch({ headless: true,
-    ...(process.env.MINICORE_CHROMIUM_PATH && { executablePath: process.env.MINICORE_CHROMIUM_PATH }) });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, reducedMotion: 'reduce',
-    viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 1000 },
-    isMobile: mobile, hasTouch: mobile });
-  const page = await context.newPage();
-  page.setDefaultTimeout(15000);
-  const errors = [], methods = [];
-  page.on('pageerror', error => errors.push(error.message));
-  page.on('websocket', socket => socket.on('framesent', frame => {
-    const value = JSON.parse(String(frame.payload));
-    if (value.method) methods.push(value.method);
-  }));
-  async function save(name) {
-    await mkdir('test-results', { recursive: true });
-    await page.screenshot({ path: 'test-results/' + name + '.png', fullPage: true });
-  }
-  return { ...host, browser, context, page, errors, methods, save };
-}
-async function login(page, url) {
-  await page.goto(url);
-  await page.getByPlaceholder('Host access key').fill(HOST_KEY);
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await page.locator('#app').waitFor({ state: 'visible' });
-}
-async function bootstrap(page, workspace) {
-  await page.locator('#newb').click();
-  const sheet = page.getByRole('dialog', { name: 'New session', exact: true });
-  await sheet.locator('button[data-k="n' + workspace + '"]').click();
-  await sheet.getByRole('button', { name: 'Start in workspace', exact: true }).click();
-  await sheet.waitFor({ state: 'detached' });
-  await page.locator('#sub').getByText('workspace', { exact: true }).waitFor();
-}
-async function send(page, text) {
-  await page.getByRole('textbox', { name: 'Message', exact: true }).fill(text);
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-}
-async function idle(page) { await page.locator('#pri[aria-label="Send"]').waitFor(); }
-async function menu(page, name) {
-  await page.locator('#moreb').click();
-  await page.getByRole('dialog').last().getByRole('button', { name, exact: true }).click();
-}
+import { browserFixture, login, bootstrap, send, idle, menu } from '../support/browser.mjs';
 
 test('desktop UI bootstraps, streams, approves real tools, renames and restores read-only history', { timeout: 90000 }, async t => {
   const f = await browserFixture(t), { page } = f;
@@ -120,7 +72,7 @@ test('desktop UI bootstraps, streams, approves real tools, renames and restores 
 });
 
 test('mobile layout keeps directory creation, streaming and drawer controls usable', { timeout: 60000 }, async t => {
-  const f = await browserFixture(t, true), { page } = f;
+  const f = await browserFixture(t, { mobile: true }), { page } = f;
   try {
     await login(page, f.url);
     await page.locator('#newb').click();

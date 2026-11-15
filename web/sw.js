@@ -1,7 +1,7 @@
 'use strict';
 // Cache only this application's public assets. Host credentials and arbitrary requests never enter it.
 const PREFIX = 'minicore-web-';
-const CACHE = PREFIX + '0.1.0';
+const CACHE = PREFIX + '0.1.1';
 const BASE = new URL('./', self.location.href);
 const SHELL = [
   './', './index.html', './app.css', './theme.js', './main.js', './core.js', './ui.js', './net.js', './host.js', './host-state.js', './host-app.js',

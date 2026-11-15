@@ -299,6 +299,25 @@ const fmtTok = n => n == null ? '?' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n 
 const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 // ---- transcript text ----
+// A preview is a display copy. Bound the slice before looking for lines, and
+// never leave half a UTF-16 surrogate pair at either edge.
+function boundedPreview(text, { maxLines = 20, maxChars = 4096, tail = false } = {}) {
+  if (!text) return { text: '', truncated: false };
+  if (maxLines < 1 || maxChars < 1) return { text: '', truncated: true };
+  let start = tail ? Math.max(0, text.length - maxChars) : 0, end = tail ? text.length : Math.min(text.length, maxChars);
+  const high = code => code >= 0xd800 && code <= 0xdbff, low = code => code >= 0xdc00 && code <= 0xdfff;
+  if (start > 0 && low(text.charCodeAt(start)) && high(text.charCodeAt(start - 1))) start++;
+  if (end < text.length && high(text.charCodeAt(end - 1)) && low(text.charCodeAt(end))) end--;
+  let preview = text.slice(start, end), lines = 1;
+  if (tail) {
+    for (let i = preview.length - 1; i >= 0; i--) if (preview[i] === '\n' && lines++ === maxLines) { start += i + 1; preview = preview.slice(i + 1); break; }
+  } else {
+    for (let i = 0; i < preview.length; i++) if (preview[i] === '\n' && lines++ === maxLines) { end = start + i; preview = preview.slice(0, i); break; }
+  }
+  return { text: preview, truncated: start > 0 || end < text.length };
+}
+const toolOutput = b => b.output_text || '';
+const meaningfulText = text => /\S/.test(text || '');
 function toolKind(name) {
   if (/^(bash|shell|sh|exec|run|terminal|command)$/.test(name)) return 'cmd';
   if (/^(write|create)/.test(name)) return 'write';
@@ -354,7 +373,7 @@ function diffStats(text) {
   for (const f of parseDiff(text)) { added += f.added; removed += f.removed; }
   return { added, removed };
 }
-const quiet = b => b.type === 'assistant' && !b.text && !b.reasoning;
+const quiet = b => b.type === 'assistant' && !meaningfulText(b.text) && !meaningfulText(b.reasoning) && !projectionLabels(b).length;
 // Consecutive reads and searches (empty assistant blocks between them do not count) group into one row.
 function groupTools(blocks, from, to) {
   const out = [];
@@ -389,7 +408,7 @@ function foldTurns(blocks, from, to) {
     if ((b.type === 'user' && b.kind !== 'steering') || b.type === 'earlier') { start = i + 1; promptAt = b.type === 'user' ? b.at : null; continue; }
     if (b.type !== 'turn_end') continue;
     let fin = i;
-    for (let j = i - 1; j >= start && blocks[j].type !== 'tool'; j--) if (blocks[j].type === 'assistant' && blocks[j].text) { fin = j; break; }
+    for (let j = i - 1; j >= start && blocks[j].type !== 'tool'; j--) if (blocks[j].type === 'assistant' && meaningfulText(blocks[j].text)) { fin = j; break; }
     let hidden = [], tools = 0, failed = 0, at = promptAt, segment = start, steered = false;
     const finish = until => {
       if (hidden.length) {
@@ -404,7 +423,7 @@ function foldTurns(blocks, from, to) {
       const x = blocks[j];
       if (x.type === 'user' && x.kind === 'steering') {
         steered = true; finish(x.at); at = x.at; segment = j + 1;
-      } else if (j < fin) {
+      } else if (j < fin && !projectionLabels(x).length) {
         if (x.type === 'tool') { tools++; if (x.state === 'failed') failed++; }
         if ((x.type === 'tool' || x.type === 'assistant') && !quiet(x)) hidden.push(j);
       }
@@ -418,27 +437,31 @@ function findBlocks(blocks, q, from, to) {
   const n = q.toLowerCase(), out = [];
   for (let i = from; i < to && n; i++) {
     const b = blocks[i];
-    const t = b.type === 'tool' ? b.detail + '\n' + b.output.join('\n') : b.type === 'user' ? b.text : b.type === 'assistant' ? b.text + '\n' + b.reasoning : '';
+    const t = b.type === 'tool' ? b.detail + '\n' + toolOutput(b) : b.type === 'user' ? b.text : b.type === 'assistant' ? b.text + '\n' + b.reasoning : '';
     if (t.toLowerCase().includes(n)) out.push(i);
   }
   return out;
 }
 const foldText = f => 'Worked' + (f.ms != null ? ' ' + fmtDur(f.ms) : '');
 const OUTCOME = { completed: 'Completed', cancelled: 'Stopped', interrupted: 'Stopped', failed: 'Failed' };
-// A failed turn as the host explains it: the title and hint are the TUI's words; `ids` is the provider's status and code
-// (the type only when it adds to the code).
+// Keep native Fault identifiers separate from optional upstream diagnostics.
+// Historical reasons use this same view without inventing a Fault identity.
 function failureView(f) {
-  const name = f.code && f.type && f.code !== f.type ? f.code + '/' + f.type : f.code || f.type;
+  const name = f.code != null && f.type ? f.code + '/' + f.type : f.code ?? f.type;
+  const message = f.message || '', preview = boundedPreview(message, { maxLines: 3, maxChars: 2048 });
+  const diagnostics = [['HTTP status', f.details?.http_status], ['Provider type', f.details?.provider_type], ['Provider code', f.details?.provider_code], ['Request id', f.details?.request_id], ['Diagnostic id', f.diagnostic_id]]
+    .filter(([, value]) => value != null).map(([label, value]) => [label, String(value)]);
   return {
-    title: cap(f.title), ids: [f.status, name].filter(x => x != null && x !== '').join(' · '), hint: f.hint, message: f.message || '',
-    multiline: !!f.message && f.message.split('\n').length > 3, action: f.action || null,
+    ...f, title: cap(f.title || 'Failed'), ids: [f.status, name].filter(x => x != null && x !== '').join(' · '), hint: f.hint || '', message,
+    preview: preview.text, truncated: preview.truncated, multiline: preview.truncated, diagnostics, action: f.action || null,
   };
 }
 function turnEnd(b, at, tz) {
-  const u = b.usage, tok = u && u.input + u.output, failure = b.failure && failureView(b.failure);
+  const u = b.usage, tok = u && u.input + u.output;
+  const cause = b.failure || (b.outcome === 'failed' && b.reason != null ? { message: b.reason } : null), failure = cause && failureView(cause);
   return {
     ok: b.outcome === 'completed',
-    parts: [failure ? failure.title : OUTCOME[b.outcome] || cap(String(b.outcome).replace(/_/g, ' ')), b.duration_ms != null && fmtDur(b.duration_ms),
+    parts: [OUTCOME[b.outcome] || cap(String(b.outcome).replace(/_/g, ' ')), b.duration_ms != null && fmtDur(b.duration_ms),
       at != null && clock(at, tz), tok > 0 && fmtTok(tok) + ' tokens'].filter(Boolean),
     changes: b.changes && b.changes.files > 0 ? b.changes : null,
     failure,
@@ -657,12 +680,15 @@ function contextView(d) {
       n.compaction && ['Compaction', n.compaction.state.phase],
       ['Automatic compaction', n.compaction_settings.enabled ? n.compaction_settings.trigger_percent + '% trigger · ' + n.compaction_settings.target_percent + '% target' : 'Disabled'],
     ].filter(Boolean);
-    return { percent: null, used: 'Current context token count is not reported', rows, failure: n.block_reason?.message || n.history_save?.fault?.message || '', compacting: d.compacting };
+    const compaction = n.compaction;
+    const compactFailure = compaction?.source?.kind === 'manual' && compaction.state?.phase === 'finished' && compaction.state.result?.outcome === 'failed' ? compaction.state.result.fault?.message : '';
+    return { percent: null, used: 'Current context token count is not reported', rows, failure: n.block_reason?.message || n.history_save?.fault?.message || compactFailure || '', compacting: d.compacting };
   }
   return { percent: d.percent, used: d.tokens == null ? 'Current context token count is not reported' : fmtTok(d.tokens) + ' of ' + fmtTok(d.window) + ' tokens', rows: [], failure: d.failure || '', compacting: !!d.compacting };
 }
 function projectionLabels(b) {
   const labels = [];
+  if (b.partial) labels.push('Partial response');
   if (b.recovery) labels.push((b.saving === 'saved' ? 'Saved record; body ' : 'Body ')
     + b.recovery.status.replace(/_/g, ' ') + (b.recovery.reason ? ' · ' + b.recovery.reason : ''));
   if (b.preserved || (b.preserved_channels && b.preserved_channels.length)) {
@@ -671,21 +697,33 @@ function projectionLabels(b) {
   }
   return labels;
 }
+function fencedText(text) {
+  let longest = 2, run = 0;
+  for (let i = 0; i < text.length; i++) { run = text[i] === '`' ? run + 1 : 0; longest = Math.max(longest, run); }
+  const fence = '`'.repeat(longest + 1);
+  return fence + '\n' + text + (text.endsWith('\n') ? '' : '\n') + fence;
+}
 function exportMd(state, blocks) {
   const s = state.session, out = ['# ' + titled(s.title), '', '`' + s.workspace + '`' + (s.model ? ' · ' + s.model : ''), ''];
   for (const b of blocks) {
     for (const label of projectionLabels(b)) out.push('_' + label + '_', '');
     if (b.type === 'user') out.push(b.kind === 'steering' ? '**You (steer):** ' + b.text : '## You\n\n' + b.text, '');
     else if (b.type === 'assistant' && b.text) out.push(b.text, '');
-    else if (b.type === 'tool') { const f = toolInfo(b); out.push('- ' + f.verb + ' `' + f.target + '`' + (f.exit ? ' (' + f.exit + ')' : f.note ? ' (' + f.note + ')' : ''), ''); }
+    else if (b.type === 'tool') {
+      const f = toolInfo(b), text = toolOutput(b);
+      out.push('- ' + f.verb + ' `' + f.target + '`' + (f.exit ? ' (' + f.exit + ')' : f.note ? ' (' + f.note + ')' : ''), '');
+      if (b.truncated || b.output_dropped) out.push('_Output is incomplete; only the observed text is included._', '');
+      if (text) out.push(fencedText(text), '');
+    }
     else if (b.type === 'turn_end') {
       const t = turnEnd(b, null, 0), f = t.failure, parts = f && f.ids ? [t.parts[0], f.ids, ...t.parts.slice(1)] : t.parts;
       out.push('_' + parts.join(' · ') + '_', '');
-      if (f && f.message) out.push(f.message.split('\n').map(l => ('> ' + l).trimEnd()).join('\n'), '');
+      if (f && f.message) out.push(f.message.split('\n').map(l => '> ' + l).join('\n'), '');
+      if (f?.diagnostics.length) out.push(...f.diagnostics.map(([label, value]) => '- ' + label + ': ' + value), '');
     }
     else if (b.type === 'compaction') out.push('_' + compactionText(b) + '_', '');
   }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
+  return out.join('\n');
 }
 
 function recentWorkspaces(sessions, max = 6) {
@@ -698,7 +736,7 @@ export {
   WINDOW, inline, parseMd, mdInc, backoff, basename, plural, titled, quiet, midTrunc, mergeReturned, deviceName,
   installOffer, intents, queries, fs, createStore, intent, newDraftVersion, captureTarget, syncReply, pending, disconnect,
   sendAgain, discardUnconfirmed, MAX_INTENTS, MAX_INTENT_TEXT_BYTES, unconfirmed, unreachable, fsError, errorText, stamp, relTime, sessionLayout, groupRows, PINNED_KEY, recent, finishedText, prunePins,
-  fmtElapsed, fmtTok, fmtNum, groupTools, foldTurns, findBlocks, foldText, toolInfo, parseDiff, diffStats, liveBlock, turnEnd,
+  fmtElapsed, fmtTok, fmtNum, groupTools, foldTurns, findBlocks, foldText, toolInfo, toolOutput, boundedPreview, meaningfulText, parseDiff, diffStats, liveBlock, failureView, turnEnd,
   changesText, compactionText, statusLine, placeholder, allowedText, canStop, primaryKind, primaryTap, TAP_SLOP, approvalKey, approvalTitle, interactionKey, answerPending, validAnswerText, ANSWER_TEXT_BYTES, textAnswer,
   approvalOptions, approvalBody, approvalLine, changeStatus, contextView, projectionLabels, exportMd, slashMenu, parseSlash, atToken,
   insertMention, pushRecent, literal, composerKey, commandList, queueView, thinkingPreview, splitPath, within, crumbs, tilde, isDrive,

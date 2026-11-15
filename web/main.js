@@ -2,7 +2,7 @@ import * as MC from './core.js';
 import { closePriMenu, followEnd, openFind, markDirty, onNewSession, openPlus, renderDock, renderEmpty, renderTop, resetTranscript, returned, returnedToDraft, schedule, settleSubmission, stop, syncApproval, toLatest, unconfirmedHome, unqueueRefused } from './conversation.js';
 import { S, bind, boot, handshake, isMain, pump, repaint, turnStatus, viewed, wake } from './net.js';
 import { buildNav, clearFailed, clearPending, closeNav, modelSettled, onNotice, openHelp, openInfo, openLive, openNav, openNew, openSessionMenu, renderAttention, renderBanners, renderNav, sessionEvent, settle, stepSession, syncTick } from './sessions.js';
-import { $, actions, announce, h, inField, keepAwake, notify, reduced, refreshSheets, set, toast, topModal, topPanel } from './ui.js';
+import { $, actions, announce, h, inField, keepAwake, notify, reduced, refreshSheets, rememberError, set, showError, toast, topModal, topPanel } from './ui.js';
 
 let hiddenAt = 0, wasBusy = false;
 const syncWake = () => keepAwake(!!S.state && !!(turnStatus().busy || turnStatus().compacting));
@@ -11,6 +11,10 @@ document.addEventListener('mouseover', e => { const b = e.target.closest('button
 
 function onMessage(msg, fx) {
   if (!handshake(fx)) return;
+  if (msg?.kind === 'turn.finished' && msg.data.outcome === 'failed') {
+    const target = Object.fromEntries(['host_id', 'host_incarnation', 'agent_id', 'session_id', 'load_id', 'turn_id'].filter(key => msg[key] != null).map(key => [key, msg[key]]));
+    rememberError({ text: msg.data.fault?.message ?? msg.data.reason ?? 'Turn failed', target, ...(msg.data.fault && { fault: msg.data.fault }) });
+  }
   if (fx.newSession) onNewSession();
   if (fx.dirty) markDirty(fx.dirty);
   if (fx.state || fx.welcome) renderState();
@@ -24,7 +28,7 @@ function onAck(a) {
   // A refused input is only unsent when the server says the Agent never took it; an unknown one
   // stays unconfirmed, and an accepted one whose turn failed to start is still accepted.
   if (k === 'submit' || k === 'queue') settleSubmission(a);
-  if (a.start_error) toast('Queued, but the turn could not start: ' + a.start_error.message, 'error');
+  if (a.start_error) showError(a.errorRecord);
   if (k === 'unqueue' && !a.ok) unqueueRefused(a.spec.input_id);
   if (k === 'unqueue' && a.ok && a.spec.edit && a.text != null) {
     if (a.current) returned(a.input_id, a.text);
@@ -37,8 +41,8 @@ function onAck(a) {
   if (k === 'set_model' || k === 'set_reasoning') modelSettled(k);
   if (k === 'open_session' && settle(a.spec.session_id) && a.ok) closeNav();
   if (a.own) a.own(a);
-  else if (!a.ok && a.acceptance !== 'unknown') toast(MC.errorText(a.error), a.error === 'stale' ? null : 'error');
-  else if (!a.ok) toast('Not confirmed · it may or may not have arrived', 'error');
+  else if (!a.ok && a.error === 'stale') toast(MC.errorText(a.error));
+  else if (!a.ok || a.error) showError(a.errorRecord);
   renderState();
 }
 
@@ -93,6 +97,7 @@ function renderState() {
 
 // ---- keys ----
 document.addEventListener('keydown', e => {
+  if (e.isComposing || e.keyCode === 229) return;
   if (!isMain()) return;
   const m = topModal();
   if (e.key === 'Escape') {

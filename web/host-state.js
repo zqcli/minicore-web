@@ -7,7 +7,7 @@ const modelKey = s => 'model:' + s.turn_id + ':' + s.response_index;
 const toolKey = s => 'tool:' + s.turn_id + ':' + s.tool_call_id;
 const time = value => value == null ? null : Date.parse(value);
 export const faultText = value => value?.message || 'Host request failed';
-const faultView = fault => fault && ({ title: 'Failed', code: fault.code, type: fault.type, message: fault.message, hint: '' });
+const faultView = fault => fault && ({ ...fault, title: 'Failed', hint: '' });
 export function usageView(usage) {
   return usage && { input: usage.input_tokens, output: usage.output_tokens, cached: usage.cache_read_tokens, reasoning: usage.reasoning_tokens };
 }
@@ -39,14 +39,19 @@ export function interactionView(pending, state, tool) {
 function toolBlock(s, name, arguments_ = {}) {
   const input = typeof arguments_ === 'string' ? arguments_ : arguments_.command || arguments_.patch || arguments_.content || JSON.stringify(arguments_, null, 2);
   const detail = arguments_.path || arguments_.file_path || arguments_.command || arguments_.query || arguments_.url || '';
-  return { ...source(s), type: 'tool', name, input, arguments: arguments_, detail, state: 'pending', output: [], output_dropped: 0 };
+  return { ...source(s), type: 'tool', name, input, arguments: arguments_, detail, state: 'pending', output_text: '', output_lines: 0, output_dropped: 0 };
 }
 function assistantBlock(s, content, streaming = false) {
   return { ...source(s), type: 'assistant', text: content.filter(p => p.type === 'text').map(p => p.data).join(''),
     reasoning: content.filter(p => p.type === 'reasoning').map(p => p.data.text || p.data.summary || '').join('\n'), streaming };
 }
 const toolOutcome = result => ['success', 'input_provided'].includes(result.outcome) ? 'completed' : result.outcome === 'cancelled' ? 'cancelled' : result.outcome === 'denied' ? 'denied' : 'failed';
-function resultTool(block, result) { const text = result.output.content; return { ...block, state: toolOutcome(result), output: text ? text.split('\n') : [], output_lines: text ? text.split('\n').length : 0, result }; }
+function outputLines(text) {
+  let count = text ? 1 : 0;
+  for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) count++;
+  return count;
+}
+function resultTool(block, result) { const text = result.output.content; return { ...block, state: toolOutcome(result), output_text: text, output_lines: outputLines(text), output_dropped: 0, truncated: false, result }; }
 const RUNNER_FIELDS = new Set(['runner_revision', 'pending_interactions', 'compaction']);
 
 // Controller and Runner clocks have different scopes. A newer Runner cannot roll back
@@ -166,7 +171,8 @@ export class SessionObservation {
     }
     if (block.type === 'tool' && !block.result && matching.length) {
       const text = matching.map(buffer => matching.length > 1 ? '[' + buffer.channel + ']\n' + buffer.text : buffer.text).join('\n');
-      if (text !== block.output_text) block = { ...block, output_text: text, output: text ? text.split('\n') : [], truncated: matching.some(b => b.position < b.end) };
+      const truncated = matching.some(b => b.position < b.end);
+      if (text !== block.output_text || truncated !== block.truncated) block = { ...block, output_text: text, output_lines: text === block.output_text ? block.output_lines : outputLines(text), truncated };
     }
     return block;
   }
@@ -231,5 +237,5 @@ export class SessionObservation {
 function sameBlock(a, b) {
   const keys = Object.keys(a);
   if (keys.length !== Object.keys(b).length) return false;
-  return keys.every(key => a[key] === b[key] || (key === 'output' && a.output_text != null && a.output_text === b.output_text));
+  return keys.every(key => a[key] === b[key]);
 }
