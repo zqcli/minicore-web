@@ -90,6 +90,14 @@ fixed source `355d4b8bac4a3a634cd83a49fbf33fea7b67a262`.
 - These are UI preview budgets only; they never limit native body, stored
   history, transport frames or tool execution. Explicitly opened full details
   may contain the full text. Preserve incremental Markdown and scroll anchors.
+- A full tool-output panel keeps the complete observed text, but mounts at most
+  16384 UTF-16 units per reading page to avoid blocking browser layout on a huge
+  single line. Page boundaries never split a Unicode scalar, add a newline,
+  duplicate text or omit text. Ordinary output remains a single page. Larger
+  output starts on its first page with visible page numbers and Previous/Next
+  controls; Wrap applies to the displayed page. Copy and export retain the full
+  original text, including its final newline. Loading the remaining native
+  output rebuilds these local display pages without changing native UTF-8 offsets.
 
 ## 6. Browser controls
 
@@ -125,7 +133,7 @@ The cache version changes with the Web release. Closing a tab does not stop Host
 | Catalog | Deferred old read/new rename, unknown Session during pending read, running/approval before an older summary, deletion, reconnect and foreground/background navigation. |
 | Compaction | Real acceptance followed by failed result, repeat observation, background target, Context cause, and successful/nonfailed results. |
 | Identity | Same titles, long prefixes, rename, running/idle and narrow mobile rows keep visible stable IDs and full native targets. |
-| Preview | Very large single-line Unicode and many-line output remain bounded in cards, signal truncation and preserve full data; normal tool cards and empty assistant spacing remain usable. |
+| Preview | Very large single-line Unicode and many-line output remain bounded in cards, signal truncation and preserve full data; full-output pages reconstruct the exact original text and Copy remains complete; normal tool cards and empty assistant spacing remain usable. |
 | Browser behavior | Captured Context target, menus across disconnect/read-only changes, composing Enter/Escape, existing send/steer/follow-up keys, native paste, focus and desktop/mobile flows. |
 | Existing contracts | Static build, unit regressions, real Host WSS owners, storage/local tools, approvals, queues, cancellation, configuration, history, read-only/recovery and static-only PWA caching. |
 
