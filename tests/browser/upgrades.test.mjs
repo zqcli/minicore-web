@@ -21,8 +21,9 @@ async function currentId(page) {
 async function captureFailure(f, name, task) {
   try { await task(); assert.deepEqual(f.errors, []); }
   catch (error) {
-    await f.save(name + '-failure');
-    error.message += '\nPage errors: ' + JSON.stringify(f.errors) + '\nRecent RPC methods: ' + JSON.stringify(f.methods.slice(-30));
+    error.message += '\nStage: ' + (f.stage || name) + '\nPage errors: ' + JSON.stringify(f.errors) + '\nRecent RPC methods: ' + JSON.stringify(f.methods.slice(-30));
+    try { await f.save(name + '-failure', { timeout: 5000 }); }
+    catch (captureError) { error.message += '\nFailure screenshot: ' + captureError.message; }
     throw error;
   }
 }
@@ -201,13 +202,18 @@ test('large native tool result has a bounded preview with complete explicit Open
     assert.ok((await preview.textContent()).length <= 16384, 'card DOM contains a bounded display copy');
     assert.ok((await tool.innerText()).toLowerCase().includes('truncat'));
     await f.save('upgrade-large-preview');
+    f.stage = 'open complete tool output';
     await tool.getByRole('button', { name: 'Open', exact: true }).click();
+    f.stage = 'read complete tool output DOM';
     const output = page.getByRole('dialog').last();
     assert.ok((await output.locator('pre').textContent()).includes(original));
+    f.stage = 'copy complete tool output';
     await f.context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await output.getByRole('button', { name: 'Copy', exact: true }).click();
     await output.locator('button.done').waitFor();
+    f.stage = 'verify complete clipboard text';
     assert.ok((await page.evaluate(() => navigator.clipboard.readText())).includes(original));
+    f.stage = 'capture complete tool output panel';
     await f.save('upgrade-large-output-open');
   });
 });

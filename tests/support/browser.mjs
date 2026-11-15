@@ -19,9 +19,9 @@ export async function browserFixture(t, { mobile = false, ...hostOptions } = {})
     const value = JSON.parse(String(frame.payload));
     if (value.method) { methods.push(value.method); requests.push(value); }
   }));
-  async function save(name) {
+  async function save(name, { timeout = 15000 } = {}) {
     await mkdir('test-results', { recursive: true });
-    await page.screenshot({ path: 'test-results/' + name + '.png', fullPage: true });
+    await page.screenshot({ path: 'test-results/' + name + '.png', fullPage: true, animations: 'disabled', timeout });
   }
   return { ...host, browser, context, page, errors, methods, requests, save };
 }
