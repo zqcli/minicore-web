@@ -1,6 +1,6 @@
 # MiniCore Web
 
-## 0.1.1 upgrade — implemented, final browser verification pending
+## 0.1.1 upgrade — delivered and verified
 
 - 2026-11-16: user authorized the Web upgrade following the read-only TUI/Web
   review. `SPEC.md` records the behavior before implementation. Release:
@@ -23,9 +23,9 @@
   splitting Unicode scalar values. Full output retains final newlines; explicit
   Open/Copy/export includes complete observed text, with partial data labelled.
   Native partial/recovery notices remain visible outside automatic work folds.
-- Local verification: Node 24.22.1; 32 JS modules/imports checked, 102 unit/UI
+- Local verification: Node 24.22.1; 32 JS modules/imports checked, 107 unit/UI
   cases passed, static build passed, seven real Host TLS/WSS integration cases
-  passed, no failures or skipped cases. The upgrade adds 38 unit/UI regressions
+  passed, no failures or skipped cases. The upgrade adds 43 unit/UI regressions
   and three real-WSS cases to the original suites.
 - WSS acceptance additionally exercises native upstream HTTP failure through
   live state/fresh history/export, Responses reasoning part/item boundaries,
@@ -38,9 +38,47 @@
   Sessions, captured Context, live menu state/focus, read-only/disconnect,
   composition guards and send/steer/follow-up keys, a 1.4 MB Unicode tool result,
   and background compaction error recall/Copy. Local Chromium launch is blocked
-  by `socket() failed: Operation not permitted`; execution and screenshots are
-  pending the repository's CI. Synthetic composition flags do not certify a
-  physical keyboard, macOS/Safari or a specific system IME.
+  by `socket() failed: Operation not permitted`; actual browser execution was
+  verified in CI. Synthetic composition flags do not certify a physical keyboard,
+  macOS/Safari or a specific system IME.
+- Real Chromium exposed a full-output layout issue beyond the bounded card:
+  opening one 1.4 MB Unicode line blocked the click for more than 15 seconds.
+  Specification commit `49e9e1b4ef37c2e9b7f866312a99c0de7751aea2` precedes
+  the fix in `126955a3dce94cc8ba48cd34679cab9f10c718e9`. Full tool output now
+  uses exact reading pages of at most 16384 UTF-16 units, without splitting a
+  Unicode scalar or inserting whitespace; Copy/export retain the whole text.
+  Native UTF-8 repair offsets remain unchanged. The browser walks all 37 pages,
+  reconstructs the exact native tool JSON, verifies full clipboard text, changes
+  Wrap, uses Previous/Next on desktop and mobile, and resumes composer editing.
+- Initial CI failures are retained as evidence: run 43775108405 exposed a drawer
+  measurement without waiting for its opening transition and an automatic compaction
+  request mistaken for a normal model request; the assertions remain intact after
+  correcting these test prerequisites. Runs 43775781148 and 43776176171 isolated
+  the actual full-output issue. Run 43776950937 passed full-output acceptance but
+  failed a focus assertion without synchronizing with the sheet's initial
+  animation-frame focus; controlled callbacks reproduced that competing focus.
+  The test now waits for initial dialog focus before exercising refresh preservation;
+  it still requires Rename focus to survive the running-to-idle update.
+- Final functional checkpoint:
+  `6397f01c2aef56681e3123790cc4ac2dfa87d897`, tree
+  `3aa13d28a3e66c759faa8e2f5461d2e0fef5844c`.
+  [CI run 43777406539](https://github.com/zqcli/minicore-web/actions/runs/43777406539)
+  passed on Ubuntu 24.04 / Node 22.23.4: the
+  [static job](https://github.com/zqcli/minicore-web/actions/runs/43777406539/job/133006725106)
+  and [real Host plus Chromium job](https://github.com/zqcli/minicore-web/actions/runs/43777406539/job/133006724886)
+  passed all 107 unit/UI, seven real TLS/WSS integration and seven browser cases,
+  with zero failures and zero skipped cases. Static checks and build also passed.
+- [Screenshot artifact 14187146259](https://github.com/zqcli/minicore-web/actions/runs/43777406539/artifacts/14187146259)
+  contains 14 PNGs. Desktop/mobile Session identities, disconnected menu, reasoning
+  boundaries, complete original-target error details and desktop/mobile paged
+  output were visually checked. Finite animations are disabled for stable captures.
+  The artifact SHA-256 is
+  `622865b25f92ef48f11933d58bf538d97297bf60b402a439d69e3ccfda4d7018`.
+- Web release metadata, About display and static cache are 0.1.1. Changes are
+  published to `dev`; `main` remains `59febf234b2c37b1358963513b24e94824bcbbb6`.
+  Deployment guidance requires the separately upgraded Host and its configuration
+  directory. No production Host restart or external static-site deployment is
+  part of this repository delivery.
 
 ## 0.1.0 delivery record
 
