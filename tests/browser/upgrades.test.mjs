@@ -95,11 +95,22 @@ test('same-title Sessions keep identities, captured Context status and reactive 
     const sessionMenu = page.getByRole('dialog').last();
     const compact = sessionMenu.getByRole('button', { name: 'Compact now', exact: true });
     assert.equal(await compact.isDisabled(), true);
-    await sessionMenu.getByRole('button', { name: 'Rename', exact: true }).focus();
+    // Opening a sheet gives it initial focus on the next animation frame. Test
+    // state-update focus preservation only after that opening step has finished.
+    const menuElement = await sessionMenu.elementHandle();
+    await page.waitForFunction(menu => menu === document.activeElement, menuElement);
+    await menuElement.dispose();
+    const rename = sessionMenu.getByRole('button', { name: 'Rename', exact: true });
+    await rename.focus();
+    assert.equal(await rename.evaluate(button => button === document.activeElement), true);
     model.finish('The second Session is now idle.');
     await page.waitForFunction(() => [...document.querySelectorAll('[role="dialog"] button')].some(b => b.textContent.trim() === 'Compact now' && !b.disabled));
     assert.equal(await compact.isDisabled(), false);
-    assert.equal(await sessionMenu.getByRole('button', { name: 'Rename', exact: true }).evaluate(button => button === document.activeElement), true);
+    assert.equal(await rename.evaluate(button => button === document.activeElement), true,
+      'menu refresh retains Rename focus: ' + JSON.stringify(await page.evaluate(() => ({
+        tag: document.activeElement?.tagName, role: document.activeElement?.getAttribute('role'),
+        key: document.activeElement?.getAttribute('data-k')
+      }))));
     await page.keyboard.press('Escape');
     await renamed(page, 'Only Session B renamed');
     assert.equal(await page.locator('[data-k="s' + a + '"]').getAttribute('title'), title);
